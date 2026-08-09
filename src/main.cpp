@@ -11,6 +11,7 @@ const uint8_t BRIGHTNESS = 255;     // ケース(拡散シェード)前提で最
 
 #define LED_PIN 27
 #define STALE_MS (10UL * 60UL * 1000UL)   // 10分更新がないセッションは失効
+#define DEFAULT_STALE_MS (2UL * 60UL * 1000UL) // 手動送信(sid=default)は 2分で失効(テストの残留対策)
 #define OFF_MS   (30UL * 60UL * 1000UL)   // 30分リクエストがなければ消灯
 #define DONE_MS  6000UL                   // done の表示時間
 #define WAIT_BLINK_MS 30000UL             // wait の点滅時間(以降は常時点灯で 10 分待って idle へ)
@@ -102,10 +103,14 @@ void handleRgb() {
   server.send(200, "text/plain", "ok\n");
 }
 
+unsigned long staleFor(const Session& s) {
+  return (strcmp(s.id, "default") == 0) ? DEFAULT_STALE_MS : STALE_MS;
+}
+
 State aggregate(unsigned long now) {
   bool anyWait = false, anyErr = false, anyDone = false, anyTool = false;
   for (auto& s : sessions) {
-    if (!s.used || now - s.seen > STALE_MS) continue;
+    if (!s.used || now - s.seen > staleFor(s)) continue;
     State st = s.st;
     if (st == DONE && now - s.since > DONE_MS) st = IDLE;
     if (st == WAIT && s.since > waitSince) waitSince = s.since;
@@ -123,7 +128,7 @@ State aggregate(unsigned long now) {
 
 int activeSessions(unsigned long now) {
   int n = 0;
-  for (auto& s : sessions) if (s.used && now - s.seen <= STALE_MS) n++;
+  for (auto& s : sessions) if (s.used && now - s.seen <= staleFor(s)) n++;
   return n;
 }
 
@@ -215,7 +220,7 @@ void setup() {
       "\nuptime=" + String(now / 1000) + "s"
       "\nrssi=" + String(WiFi.RSSI()) + "\n";
     for (auto& s : sessions) {
-      if (!s.used || now - s.seen > STALE_MS) continue;
+      if (!s.used || now - s.seen > staleFor(s)) continue;
       body += String("  ") + s.id + " " + names[(int)s.st] +
               " age=" + String((now - s.seen) / 1000) + "s\n";
     }
