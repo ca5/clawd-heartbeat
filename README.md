@@ -14,8 +14,8 @@ Claude Code hooks ──HTTP GET──> M5Atom Lite (WebServer:80) ──> FastL
 
 | 状態 | 見た目 | トリガー(hook) |
 | :--- | :--- | :--- |
-| `idle` | 青(常灯、2/3 輝度) | SessionStart / SessionEnd |
-| `tool` | 白の呼吸(1.5 秒周期) | UserPromptSubmit / PreToolUse / PostToolUse |
+| `idle` | 白(常灯、2/3 輝度) | SessionStart / SessionEnd |
+| `tool` | 青の呼吸(1.5 秒周期) | UserPromptSubmit / PreToolUse / PostToolUse |
 | `wait` | 赤の 400ms 点滅 × 30 秒 → 赤の常時点灯(10 分で idle へ) | PermissionRequest / AskUserQuestion の表示(led.sh 内で判定) |
 | `done` | 緑の 150ms 点滅 × 6 秒 | Stop |
 | `err` | 赤の 120ms 高速点滅 | StopFailure |

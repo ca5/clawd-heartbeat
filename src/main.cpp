@@ -159,10 +159,10 @@ void render() {
 
   switch (shown) {
     case IDLE:
-      c = CHSV(160, 255, 170);                         // 青(フルの 2/3。ケース越し視認用)
+      c = CHSV(0, 0, 170);                             // 白(フルの 2/3。ケース越し視認用)
       break;
     case TOOL:
-      c = CRGB::White;                                 // 白の呼吸(オレンジケース越しの tool/wait 区別のため)
+      c = CHSV(160, 255, 255);                         // 青の呼吸(オレンジケース越しでも赤と混同しない)
       c.nscale8(beatsin8(40, 10, 170));
       break;
     case WAIT:
