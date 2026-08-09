@@ -163,7 +163,7 @@ void render() {
       break;
     case TOOL:
       c = CHSV(160, 255, 255);                         // 青の呼吸(オレンジケース越しでも赤と混同しない)
-      c.nscale8(beatsin8(40, 10, 170));
+      c.nscale8(beatsin8(40, 10, 255));
       break;
     case WAIT:
       // 最初の 30 秒は点滅で気づかせ、以降は常灯(離席から戻ったとき用)
