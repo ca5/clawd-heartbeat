@@ -159,7 +159,7 @@ void render() {
 
   switch (shown) {
     case IDLE:
-      c = CHSV(0, 0, 170);                             // 白(フルの 2/3。ケース越し視認用)
+      c = CHSV(0, 0, 128);                             // 白(フルの 1/2。ケース越し視認用)
       break;
     case TOOL:
       c = CHSV(160, 255, 255);                         // 青の呼吸(オレンジケース越しでも赤と混同しない)
