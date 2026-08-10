@@ -8,7 +8,9 @@ Claude Code hooks ──HTTP GET──> M5Atom Lite (WebServer:80) ──> FastL
 ```
 
 設計の経緯・不採用案(シリアル直叩き等)は [`HANDOFF.md`](HANDOFF.md)、
-構築後の運用情報・設計判断ログは [`NOTES.md`](NOTES.md) を参照。
+構築後の運用情報・設計判断ログは [`NOTES.md`](NOTES.md)、
+イベントのライフサイクルと LED の対応(「Yes 押したのに赤いまま」の理由など)は
+[`LIFECYCLE.md`](LIFECYCLE.md) を参照。
 
 ## LED 表示
 
