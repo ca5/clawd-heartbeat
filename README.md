@@ -171,7 +171,7 @@ The device address comes from the `ATOM` environment variable or a gitignored `.
 
 ## Case
 
-The case is a pixel-art Clawd figure with a dead-front heart window: a 0.4 mm orange PLA skin printed as part of the body, with an 8–10 mm air gap to the LED. All state colors — including the dim idle blue — read through it. The eyes are printed separately (no AMS needed), the belly and back halves are held together by four 6 mm × 3 mm disc magnets (no screws/glue, opens for reflashing), and cable notches on all four sides let you route USB-C in any direction. STL will be published on MakerWorld (link TBA).
+The case is a pixel-art Clawd figure with a dead-front heart window: a 0.4 mm orange PLA skin printed as part of the body, with an 8–10 mm air gap to the LED. All state colors — including the dim idle blue — read through it. The eyes are printed separately (no AMS needed), the belly and back halves are held together by four 6 mm × 3 mm disc magnets (no screws/glue, opens for reflashing), and cable notches on all four sides let you route USB-C in any direction. STL: [MakerWorld](https://makerworld.com/ja/models/3159586-clawd-heartbeat).
 
 ## License & disclaimer
 
