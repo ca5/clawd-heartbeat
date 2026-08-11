@@ -150,6 +150,18 @@ WiFi 接続中の表示です。点きっぱなしの場合は 2.4GHz の SSID �
 ./led-test.sh off           # idle に戻す
 ```
 
+撮影や動作確認には `led-demo.sh` を使うと、キー操作なしでアニメーションが自動再生されます(録画を回してから放置できる):
+
+```bash
+./led-demo.sh                  # 5 状態を順に再生
+./led-demo.sh story            # 実運用の流れ: 作業中 → 承認待ち → 承認後 → 完了
+./led-demo.sh wait-full        # wait の点滅 → 30 秒で常灯に切り替わるところまで
+./led-demo.sh states --solo    # 他セッションを黙らせて確実に再生(撮影向け)
+./led-demo.sh states --loop --lead 10   # 繰り返し + 準備時間 10 秒
+```
+
+静止画は `led-test.sh rgb R G B`(10 分間色を固定)を使うと、点滅を追いかけずに落ち着いて撮れます。
+
 ## トラブルシュート
 
 | 症状 | 対処 |

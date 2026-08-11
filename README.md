@@ -145,6 +145,18 @@ That's the WiFi-connecting indicator. If it stays purple, check that your SSID i
 ./led-test.sh off           # back to idle
 ```
 
+For filming or a quick visual check, `led-demo.sh` plays the animations automatically — no keypresses, so you can start recording and let it run:
+
+```bash
+./led-demo.sh                  # all five states in sequence
+./led-demo.sh story            # realistic flow: working → permission → approved → done
+./led-demo.sh wait-full        # shows the wait blink → steady transition at 30 s
+./led-demo.sh states --solo    # silence other sessions so playback isn't overridden
+./led-demo.sh states --loop --lead 10   # repeat, with a 10 s head start
+```
+
+Tip: `led-test.sh rgb R G B` holds a fixed color for 10 minutes, which makes still photography much easier than chasing a blink.
+
 The device address comes from the `ATOM` environment variable or a gitignored `.atom-ip` file next to the script.
 
 ## Troubleshooting
