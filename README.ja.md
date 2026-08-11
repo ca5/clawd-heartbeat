@@ -10,9 +10,9 @@ Claude Code hooks ──HTTP GET──> M5Atom Lite (WebServer:80) ──> FastL
 ```
 
 設計の経緯・不採用案(シリアル直叩き等)は [`HANDOFF.md`](HANDOFF.md)、
-構築後の運用情報・設計判断ログは [`NOTES.md`](NOTES.md)、
+構築後の運用情報・設計判断ログは [`NOTES.md`](docs/NOTES.md)、
 イベントのライフサイクルと LED の対応(「Yes 押したのに赤いまま」の理由など)は
-[`LIFECYCLE.md`](LIFECYCLE.md) を参照。
+[`LIFECYCLE.md`](docs/LIFECYCLE.md) を参照。
 
 ## LED 表示
 
@@ -32,7 +32,7 @@ Claude Code hooks ──HTTP GET──> M5Atom Lite (WebServer:80) ──> FastL
 ## ハードウェア
 
 - M5Atom Lite(ESP32-PICO-D4)、オンボード SK6812 × 1(GPIO27)
-- USB Type-C 常時給電(L 字アダプタで直立)
+- USB Type-C 常時給電
 - 追加部品なし
 
 ## セットアップ
@@ -54,7 +54,7 @@ pio run -t upload
 pio device monitor   # "ready: http://<IP>" と "mac: <MAC>" が出る
 ```
 
-`platform = espressif32@6.9.0` は意図的なバージョン固定。勝手に上げないこと(NOTES.md 参照)。
+`platform = espressif32@6.9.0` は意図的なバージョン固定。勝手に上げないこと(docs/NOTES.md 参照)。
 
 ### 2. hook 設定
 
@@ -64,7 +64,7 @@ pio device monitor   # "ready: http://<IP>" と "mac: <MAC>" が出る
 cp led.sh ~/.claude/led.sh && chmod +x ~/.claude/led.sh
 ```
 
-led.sh は単なる curl ラッパーではなく、以下を担っている(詳細は NOTES.md):
+led.sh は単なる curl ラッパーではなく、以下を担っている(詳細は docs/NOTES.md):
 
 - stdin の hook JSON から `session_id` を抽出してセッション別に送信
 - AskUserQuestion(選択肢ダイアログ)の表示を wait に変換
@@ -96,7 +96,7 @@ Claude Code を再起動し、`/hooks` で読み込みを確認。
 ## FAQ — 既知の挙動(検知済みだが対処不能なもの)
 
 Claude Code の hook はダイアログへの「回答」や「中断」を通知しないため、
-以下は仕様として受け入れています。詳しい仕組みは [LIFECYCLE.md](LIFECYCLE.md) 参照。
+以下は仕様として受け入れています。詳しい仕組みは [LIFECYCLE.md](docs/LIFECYCLE.md) 参照。
 
 **Q. 承認(Yes)したのに赤のまま**
 承認の瞬間に発火するイベントが存在しません。次の信号は承認したコマンドの
@@ -146,4 +146,4 @@ WiFi 接続中の表示です。点きっぱなしの場合は 2.4GHz の SSID �
 | 書き込みモードに入らない | ボタンを押しながら USB を挿す |
 | 承認待ちなのに赤くならない | `/hooks` で PermissionRequest の読み込みを確認 |
 | Claude Code が重い | hooks の `async: true` と curl の `-m 1` を確認 |
-| `pio device monitor` が動かない | TTY 必須のためバックグラウンド実行不可。NOTES.md の pyserial 手順を使う |
+| `pio device monitor` が動かない | TTY 必須のためバックグラウンド実行不可。docs/NOTES.md の pyserial 手順を使う |

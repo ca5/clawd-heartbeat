@@ -1,5 +1,5 @@
 .pio/
 include/secrets.h
 .DS_Store
-LOCAL.md
+docs/LOCAL.md
 .atom-ip

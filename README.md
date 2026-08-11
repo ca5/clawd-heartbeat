@@ -12,8 +12,8 @@ Claude Code hooks ──HTTP GET──> M5Atom Lite (WebServer:80) ──> FastL
 
 Supplementary docs (currently in Japanese):
 
-- [`LIFECYCLE.md`](LIFECYCLE.md) — how Claude Code's hook events map to LED states, including the blind spots (why the LED stays red after you hit Yes, etc.)
-- [`NOTES.md`](NOTES.md) — design decision log and empirically measured hook behavior that the official docs don't cover
+- [`LIFECYCLE.md`](docs/LIFECYCLE.md) — how Claude Code's hook events map to LED states, including the blind spots (why the LED stays red after you hit Yes, etc.)
+- [`NOTES.md`](docs/NOTES.md) — design decision log and empirically measured hook behavior that the official docs don't cover
 - [`HANDOFF.md`](HANDOFF.md) — original design rationale and rejected alternatives (e.g. why serial doesn't work on the Atom Lite)
 
 ## LED states
@@ -32,7 +32,7 @@ Supplementary docs (currently in Japanese):
 ## Hardware
 
 - M5Atom Lite (ESP32-PICO-D4), onboard SK6812 × 1 (GPIO27)
-- USB Type-C, always powered (stands upright with an L-shaped adapter)
+- USB Type-C, always powered
 - No additional components
 
 ## Setup
@@ -54,7 +54,7 @@ On first boot, read the IP and MAC from serial, then give the device a fixed IP 
 pio device monitor   # prints "ready: http://<IP>" and "mac: <MAC>"
 ```
 
-`platform = espressif32@6.9.0` is pinned on purpose — do not bump it casually (see NOTES.md).
+`platform = espressif32@6.9.0` is pinned on purpose — do not bump it casually (see docs/NOTES.md).
 
 ### 2. Hook setup
 
@@ -64,7 +64,7 @@ Copy [`led.sh`](led.sh) to `~/.claude/led.sh` and change the IP inside to match 
 cp led.sh ~/.claude/led.sh && chmod +x ~/.claude/led.sh
 ```
 
-led.sh is more than a curl wrapper (details in NOTES.md):
+led.sh is more than a curl wrapper (details in docs/NOTES.md):
 
 - Extracts `session_id` from the hook JSON on stdin and reports state per session
 - Converts AskUserQuestion (choice dialog) display into `wait`
@@ -97,7 +97,7 @@ Restart Claude Code and confirm the hooks are loaded with `/hooks`.
 
 ## FAQ — known behaviors (detected, but nothing we can do)
 
-Claude Code's hooks do not report dialog *answers* or *interruptions*, so the following are accepted as-is. See [LIFECYCLE.md](LIFECYCLE.md) for the full picture.
+Claude Code's hooks do not report dialog *answers* or *interruptions*, so the following are accepted as-is. See [LIFECYCLE.md](docs/LIFECYCLE.md) for the full picture.
 
 **Q. I approved (Yes) but it's still red**
 No event fires at the moment of approval. The next signal is the *completion* of the approved command, so the red lasts exactly as long as the command runs. Approve a long build and it stays red the whole time. Rule of thumb: blinking red = probably unanswered (first 30 s), steady red = probably answered and a long command is running.
@@ -143,8 +143,8 @@ The device address comes from the `ATOM` environment variable or a gitignored `.
 | Won't enter download mode | Hold the button while plugging in USB |
 | No red on permission prompts | Check `/hooks` shows PermissionRequest loaded |
 | Claude Code feels slow | Verify `async: true` on hooks and `-m 1` on curl |
-| `pio device monitor` fails | It needs a TTY and can't run in the background; use the pyserial recipe in NOTES.md |
+| `pio device monitor` fails | It needs a TTY and can't run in the background; use the pyserial recipe in docs/NOTES.md |
 
 ## Case
 
-The prototype case is a pixel-art Clawd figure with a dead-front heart window: 0.4 mm orange PLA skin over a white diffuser plate, with an 8–10 mm air gap to the LED. All state colors — including the dim idle blue — read through it. STL will be published on MakerWorld (link TBA).
+The case is a pixel-art Clawd figure with a dead-front heart window: a 0.4 mm orange PLA skin printed as part of the body, with an 8–10 mm air gap to the LED. All state colors — including the dim idle blue — read through it. The eyes are printed separately (no AMS needed), the belly and back halves are held together by four 6 mm × 3 mm disc magnets (no screws/glue, opens for reflashing), and cable notches on all four sides let you route USB-C in any direction. STL will be published on MakerWorld (link TBA).
