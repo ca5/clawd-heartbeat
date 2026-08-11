@@ -159,3 +159,7 @@ WiFi 接続中の表示です。点きっぱなしの場合は 2.4GHz の SSID �
 | 承認待ちなのに赤くならない | `/hooks` で PermissionRequest の読み込みを確認 |
 | Claude Code が重い | hooks の `async: true` と curl の `-m 1` を確認 |
 | `pio device monitor` が動かない | TTY 必須のためバックグラウンド実行不可。docs/NOTES.md の pyserial 手順を使う |
+
+## ライセンスと免責
+
+コードは [MIT ライセンス](LICENSE)です。本プロジェクトは**非公式のファンプロジェクト**であり、Anthropic とは無関係です(提携・承認・後援を受けていません)。"Claude"、"Claude Code"、Clawd のキャラクターは Anthropic に帰属します。
