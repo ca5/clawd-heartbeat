@@ -39,6 +39,16 @@ Claude Code hooks ──HTTP GET──> M5Atom Lite (WebServer:80) ──> FastL
 
 ## セットアップ
 
+### 楽な方法: Claude Code にやらせる
+
+このリポジトリには `CLAUDE.md` とスキル 2 つが同梱されています。clone して中で Claude Code を開き、こう言うだけ:
+
+> **「セットアップして」** — WiFi 設定 → 書き込み → IP 固定 → hook 設定を、各ステップ検証しながら対話的に進めます
+>
+> **「緑がケース越しだと暗い」**(色・明るさの不満なんでも)— `led-tuning` スキルが、あなたのフィラメントでの実測 → 調整 → 書き込みのループを回します
+
+手動でやりたい場合は以下が同じ手順です。
+
 ### 1. ビルドと書き込み
 
 要件: [PlatformIO Core CLI](https://platformio.org/)(`brew install platformio`)

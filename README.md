@@ -39,6 +39,16 @@ Supplementary docs (currently in Japanese):
 
 ## Setup
 
+### The easy way: let Claude Code do it
+
+This repo ships with a `CLAUDE.md` and two skills. Clone it, open Claude Code inside, and just say:
+
+> **"set this up"** — walks you through WiFi config, flashing, fixing the IP, and hook installation, verifying each step
+>
+> **"the green looks dim through my case"** (or any color/brightness complaint) — the `led-tuning` skill measures translucency with your actual filament and adjusts colors iteratively
+
+The manual steps below are the same procedure, if you prefer doing it yourself.
+
 ### 1. Build and flash
 
 Requirement: [PlatformIO Core CLI](https://platformio.org/) (`brew install platformio`)
