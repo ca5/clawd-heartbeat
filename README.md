@@ -31,9 +31,9 @@ Supplementary docs (currently in Japanese):
 | `err` | Red fast blink (120 ms) | StopFailure |
 | off | Auto-off 30 min after the last request; any request wakes it | — |
 
-![Breathing while working, then flashing green when done](docs/img/demo.gif)
+![The heart cycling through idle, working, waiting for approval, and done](docs/img/demo.gif)
 
-*A real session: the heart breathes while Claude works, then flashes green when the turn ends.*
+*Idle → working → **waiting for your approval** → back to work → done. (Recorded with `./led-demo.sh clip`.)*
 
 Note on the pink heart: `tool` drives the LED white, but orange PLA absorbs green strongly, so what comes through the heart window is red + blue — a pink/magenta glow. It's a happy accident we kept. With a different filament color, expect a different shade (the `led-tuning` skill helps you re-pick colors).
 
