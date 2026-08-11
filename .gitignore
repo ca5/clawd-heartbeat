@@ -3,3 +3,5 @@ include/secrets.h
 .DS_Store
 docs/LOCAL.md
 .atom-ip
+docs/makerworld-listing.md
+docs/thumbnail-prompt.md
