@@ -8,6 +8,8 @@ A physical status indicator for [Claude Code](https://claude.com/claude-code), d
 
 Put it inside a 3D-printed Clawd figure with a dead-front heart window, and you get a desk companion whose heart beats while Claude works and pounds red when it needs you.
 
+![Clawd Heartbeat showing four states](docs/img/thumbnail.jpg)
+
 ```
 Claude Code hooks ──HTTP GET──> M5Atom Lite (WebServer:80) ──> FastLED ──> SK6812
 ```

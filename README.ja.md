@@ -7,6 +7,8 @@ M5Atom Lite の LED 1 粒で Claude Code の実行状態を表示するステー
 
 **電子工作は不要。** はんだ付けも配線もなし——電子部品は市販の M5Atom Lite(2,000 円以下)を 1 つ買うだけ。書き込んで、ガワに入れれば完成。
 
+![4 つの状態](docs/img/thumbnail.jpg)
+
 ```
 Claude Code hooks ──HTTP GET──> M5Atom Lite (WebServer:80) ──> FastLED ──> SK6812
 ```
