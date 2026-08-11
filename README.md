@@ -25,11 +25,13 @@ Supplementary docs (currently in Japanese):
 | State | Appearance | Trigger (hook) |
 | :--- | :--- | :--- |
 | `idle` | Blue, steady (1/2 brightness) | SessionStart / SessionEnd |
-| `tool` | White breathing (1.5 s cycle) | UserPromptSubmit / PreToolUse / PostToolUse |
+| `tool` | White breathing (1.5 s cycle) — **reads as pink** through an orange case | UserPromptSubmit / PreToolUse / PostToolUse |
 | `wait` | Red 400 ms blink for 30 s, then steady red (idle after 10 min) | PermissionRequest / AskUserQuestion dialog (detected in led.sh) |
 | `done` | Green 150 ms blink for 6 s | Stop |
 | `err` | Red fast blink (120 ms) | StopFailure |
 | off | Auto-off 30 min after the last request; any request wakes it | — |
+
+Note on the pink heart: `tool` drives the LED white, but orange PLA absorbs green strongly, so what comes through the heart window is red + blue — a pink/magenta glow. It's a happy accident we kept. With a different filament color, expect a different shade (the `led-tuning` skill helps you re-pick colors).
 
 **Multi-session support**: the firmware tracks state per session (up to 8) and aggregates with priority `wait > err > done > tool > idle`. If any session is waiting for approval, the LED blinks red no matter what the others are doing. Sessions expire after 10 minutes without updates.
 
