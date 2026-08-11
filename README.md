@@ -157,6 +157,7 @@ For filming or a quick visual check, `led-demo.sh` plays the animations automati
 
 ```bash
 ./led-demo.sh                  # all five states in sequence
+./led-demo.sh clip             # 16 s sequence tuned for video/GIF (easiest to film)
 ./led-demo.sh story            # realistic flow: working → permission → approved → done
 ./led-demo.sh wait-full        # shows the wait blink → steady transition at 30 s
 ./led-demo.sh states --solo    # silence other sessions so playback isn't overridden

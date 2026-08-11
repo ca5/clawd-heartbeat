@@ -4,6 +4,7 @@
 # 対話操作なしで各状態を一定時間ずつ再生する。録画を開始してから放置できる。
 #
 #   ./led-demo.sh                 # 全状態を順に再生(既定)
+#   ./led-demo.sh clip            # 動画/GIF 用の 16 秒シーケンス(撮影はこれが楽)
 #   ./led-demo.sh story           # 実運用の流れを再現(作業→承認待ち→承認後→完了)
 #   ./led-demo.sh wait-full       # wait の点滅→常灯の切替(30秒)まで見せる
 #   ./led-demo.sh states --loop   # 中断するまで繰り返す
@@ -28,7 +29,7 @@ lead=5
 solo=0
 while [ $# -gt 0 ]; do
   case "$1" in
-    states|story|wait-full) mode="$1"; shift ;;
+    states|story|wait-full|clip) mode="$1"; shift ;;
     --loop) loop=1; shift ;;
     --solo) solo=1; shift ;;
     --lead) lead="${2:?seconds}"; shift 2 ;;
@@ -92,6 +93,15 @@ play_story() {
   hold idle 4 "待機に戻る"
 }
 
+# 動画・GIF 用に詰めた 16 秒。SNS / README で最後まで見てもらえる長さに収めている
+play_clip() {
+  hold idle 2 "待機(青)"
+  hold tool 4 "作業中(呼吸)"
+  hold wait 5 "承認待ち(赤の点滅)← 主役"
+  hold tool 2 "承認後、作業再開"
+  hold done 3 "完了(緑)"
+}
+
 play_wait_full() {
   hold idle 3 "待機中"
   hold wait 40 "点滅 30 秒 → 常灯に切り替わる"
@@ -122,6 +132,7 @@ fi
 while :; do
   case "$mode" in
     states)    play_states ;;
+    clip)      play_clip ;;
     story)     play_story ;;
     wait-full) play_wait_full ;;
   esac

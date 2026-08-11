@@ -162,6 +162,7 @@ WiFi 接続中の表示です。点きっぱなしの場合は 2.4GHz の SSID �
 
 ```bash
 ./led-demo.sh                  # 5 状態を順に再生
+./led-demo.sh clip             # 動画/GIF 用の 16 秒シーケンス(撮影が楽)
 ./led-demo.sh story            # 実運用の流れ: 作業中 → 承認待ち → 承認後 → 完了
 ./led-demo.sh wait-full        # wait の点滅 → 30 秒で常灯に切り替わるところまで
 ./led-demo.sh states --solo    # 他セッションを黙らせて確実に再生(撮影向け)
