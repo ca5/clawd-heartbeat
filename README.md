@@ -4,6 +4,8 @@
 
 A physical status indicator for [Claude Code](https://claude.com/claude-code), driven by a single LED on an M5Atom Lite. Even when you're not looking at the terminal, you can tell at a glance — from the corner of your eye — whether Claude is **working**, **blocked waiting for your approval**, or **done**.
 
+**No electronics skills needed.** No soldering, no wiring — the only electronic part is a single off-the-shelf M5Atom Lite (under $15 / ¥2,000). Buy it, flash it, drop it in the printed shell.
+
 Put it inside a 3D-printed Clawd figure with a dead-front heart window, and you get a desk companion whose heart beats while Claude works and pounds red when it needs you.
 
 ```
@@ -14,7 +16,7 @@ Supplementary docs (currently in Japanese):
 
 - [`LIFECYCLE.md`](docs/LIFECYCLE.md) — how Claude Code's hook events map to LED states, including the blind spots (why the LED stays red after you hit Yes, etc.)
 - [`NOTES.md`](docs/NOTES.md) — design decision log and empirically measured hook behavior that the official docs don't cover
-- [`HANDOFF.md`](HANDOFF.md) — original design rationale and rejected alternatives (e.g. why serial doesn't work on the Atom Lite)
+- [`HANDOFF.md`](docs/HANDOFF.md) — original design rationale and rejected alternatives (e.g. why serial doesn't work on the Atom Lite)
 
 ## LED states
 

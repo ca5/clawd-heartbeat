@@ -1,7 +1,7 @@
 # NOTES — 運用情報と設計判断ログ
 
 このファイルは引き継ぎ用。使い方・セットアップは [README.md](../README.md)、
-初期構築前の設計経緯は [HANDOFF.md](../HANDOFF.md) を参照。
+初期構築前の設計経緯は [HANDOFF.md](HANDOFF.md) を参照。
 
 ## 稼働情報(この個体)
 

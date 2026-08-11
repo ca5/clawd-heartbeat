@@ -5,11 +5,13 @@
 M5Atom Lite の LED 1 粒で Claude Code の実行状態を表示するステータスインジケータ。
 ターミナルを見ていなくても「動いている」「承認待ちで止まっている」「終わった」が視界の端でわかる。
 
+**電子工作は不要。** はんだ付けも配線もなし——電子部品は市販の M5Atom Lite(2,000 円以下)を 1 つ買うだけ。書き込んで、ガワに入れれば完成。
+
 ```
 Claude Code hooks ──HTTP GET──> M5Atom Lite (WebServer:80) ──> FastLED ──> SK6812
 ```
 
-設計の経緯・不採用案(シリアル直叩き等)は [`HANDOFF.md`](HANDOFF.md)、
+設計の経緯・不採用案(シリアル直叩き等)は [`HANDOFF.md`](docs/HANDOFF.md)、
 構築後の運用情報・設計判断ログは [`NOTES.md`](docs/NOTES.md)、
 イベントのライフサイクルと LED の対応(「Yes 押したのに赤いまま」の理由など)は
 [`LIFECYCLE.md`](docs/LIFECYCLE.md) を参照。
