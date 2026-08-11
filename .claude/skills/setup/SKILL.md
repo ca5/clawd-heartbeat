@@ -1,10 +1,11 @@
 ---
 name: setup
 description: >
-  Clawd Heartbeat の初期セットアップを対話的に進める。ユーザーが「セットアップして」
-  「setup」「初期設定」「導入したい」「動かしたい」と言ったとき、または clone 直後に
-  何をすればいいか聞かれたときに使う。WiFi 設定 → ビルド・書き込み → IP 固定 →
-  hook 設定 → 動作確認まで、検証を挟みながら一つずつ進める。
+  Interactive first-time setup for Clawd Heartbeat. Use when the user says
+  "set this up", "setup", "install", "get it working", "flash it", asks what to do
+  after cloning — or in Japanese:「セットアップして」「初期設定」「導入したい」
+  「動かしたい」「書き込んで」. Walks through WiFi config → build & flash →
+  fixed IP → hook installation → verification, one validated step at a time.
 ---
 
 # Clawd Heartbeat セットアップ手順

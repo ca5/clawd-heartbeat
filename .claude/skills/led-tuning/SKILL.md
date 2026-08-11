@@ -1,11 +1,13 @@
 ---
 name: led-tuning
 description: >
-  LED の色・明るさ・点滅速度をユーザーのフィラメントとケースに合わせて調整する。
-  「色を変えたい」「明るすぎる/暗すぎる」「黄色っぽく見える」「緑が見えない」
-  「点滅を遅く/速く」「呼吸にして」「tune」「brightness」「color」などの要望で使う。
-  フィラメントの顔料次第で透過特性が大きく変わるため、実測 → 変更 → 書き込み → 目視の
-  ループで進める。
+  Tune LED colors, brightness, and blink/breathing timing to match the user's
+  filament and case. Use for requests like "change the color", "too bright /
+  too dim", "looks yellow", "can't see the green through the case", "blink
+  slower/faster", "make it breathe" — or in Japanese:「色を変えたい」
+  「明るすぎる/暗すぎる」「黄色っぽく見える」「緑が見えない」「点滅を遅く/速く」
+  「呼吸にして」. Filament pigments change translucency a lot, so iterate:
+  measure with led-test.sh → edit one value → flash → check by eye.
 ---
 
 # LED チューニング手順
