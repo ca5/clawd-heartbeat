@@ -31,6 +31,10 @@ Supplementary docs (currently in Japanese):
 | `err` | Red fast blink (120 ms) | StopFailure |
 | off | Auto-off 30 min after the last request; any request wakes it | — |
 
+![Breathing while working, then flashing green when done](docs/img/demo.gif)
+
+*A real session: the heart breathes while Claude works, then flashes green when the turn ends.*
+
 Note on the pink heart: `tool` drives the LED white, but orange PLA absorbs green strongly, so what comes through the heart window is red + blue — a pink/magenta glow. It's a happy accident we kept. With a different filament color, expect a different shade (the `led-tuning` skill helps you re-pick colors).
 
 **Multi-session support**: the firmware tracks state per session (up to 8) and aggregates with priority `wait > err > done > tool > idle`. If any session is waiting for approval, the LED blinks red no matter what the others are doing. Sessions expire after 10 minutes without updates.
