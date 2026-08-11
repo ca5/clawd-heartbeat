@@ -1,76 +1,80 @@
-# atom-led
+# Clawd Heartbeat
 
-M5Atom Lite の LED 1 粒で Claude Code の実行状態を表示するステータスインジケータ。
-ターミナルを見ていなくても「動いている」「承認待ちで止まっている」「終わった」が視界の端でわかる。
+*[日本語版はこちら / Japanese version](README.ja.md)*
+
+A physical status indicator for [Claude Code](https://claude.com/claude-code), driven by a single LED on an M5Atom Lite. Even when you're not looking at the terminal, you can tell at a glance — from the corner of your eye — whether Claude is **working**, **blocked waiting for your approval**, or **done**.
+
+Put it inside a 3D-printed Clawd figure with a dead-front heart window, and you get a desk companion whose heart beats while Claude works and pounds red when it needs you.
 
 ```
 Claude Code hooks ──HTTP GET──> M5Atom Lite (WebServer:80) ──> FastLED ──> SK6812
 ```
 
-設計の経緯・不採用案(シリアル直叩き等)は [`HANDOFF.md`](HANDOFF.md)、
-構築後の運用情報・設計判断ログは [`NOTES.md`](NOTES.md)、
-イベントのライフサイクルと LED の対応(「Yes 押したのに赤いまま」の理由など)は
-[`LIFECYCLE.md`](LIFECYCLE.md) を参照。
+Supplementary docs (currently in Japanese):
 
-## LED 表示
+- [`LIFECYCLE.md`](LIFECYCLE.md) — how Claude Code's hook events map to LED states, including the blind spots (why the LED stays red after you hit Yes, etc.)
+- [`NOTES.md`](NOTES.md) — design decision log and empirically measured hook behavior that the official docs don't cover
+- [`HANDOFF.md`](HANDOFF.md) — original design rationale and rejected alternatives (e.g. why serial doesn't work on the Atom Lite)
 
-| 状態 | 見た目 | トリガー(hook) |
+## LED states
+
+| State | Appearance | Trigger (hook) |
 | :--- | :--- | :--- |
-| `idle` | 青(常灯、1/2 輝度) | SessionStart / SessionEnd |
-| `tool` | 白の呼吸(1.5 秒周期) | UserPromptSubmit / PreToolUse / PostToolUse |
-| `wait` | 赤の 400ms 点滅 × 30 秒 → 赤の常時点灯(10 分で idle へ) | PermissionRequest / AskUserQuestion の表示(led.sh 内で判定) |
-| `done` | 緑の 150ms 点滅 × 6 秒 | Stop |
-| `err` | 赤の 120ms 高速点滅 | StopFailure |
-| 消灯 | 最後のリクエストから 30 分で自動消灯、次のリクエストで復帰 | — |
+| `idle` | Blue, steady (1/2 brightness) | SessionStart / SessionEnd |
+| `tool` | White breathing (1.5 s cycle) | UserPromptSubmit / PreToolUse / PostToolUse |
+| `wait` | Red 400 ms blink for 30 s, then steady red (idle after 10 min) | PermissionRequest / AskUserQuestion dialog (detected in led.sh) |
+| `done` | Green 150 ms blink for 6 s | Stop |
+| `err` | Red fast blink (120 ms) | StopFailure |
+| off | Auto-off 30 min after the last request; any request wakes it | — |
 
-**複数セッション対応**: セッション別(最大 8)に状態を保持し、`wait > err > done > tool > idle`
-の優先度で集約表示する。どれかのセッションが承認待ちなら他が何をしていても赤点滅。
-10 分更新のないセッションは自動失効。
+**Multi-session support**: the firmware tracks state per session (up to 8) and aggregates with priority `wait > err > done > tool > idle`. If any session is waiting for approval, the LED blinks red no matter what the others are doing. Sessions expire after 10 minutes without updates.
 
-## ハードウェア
+## Hardware
 
-- M5Atom Lite(ESP32-PICO-D4)、オンボード SK6812 × 1(GPIO27)
-- USB Type-C 常時給電(L 字アダプタで直立)
-- 追加部品なし
+- M5Atom Lite (ESP32-PICO-D4), onboard SK6812 × 1 (GPIO27)
+- USB Type-C, always powered (stands upright with an L-shaped adapter)
+- No additional components
 
-## セットアップ
+## Setup
 
-### 1. ビルドと書き込み
+### 1. Build and flash
 
-要件: [PlatformIO Core CLI](https://platformio.org/)(`brew install platformio`)
+Requirement: [PlatformIO Core CLI](https://platformio.org/) (`brew install platformio`)
 
 ```bash
-cp include/secrets.h.example include/secrets.h   # WiFi の SSID / パスワードを記入(2.4GHz のみ)
+cp include/secrets.h.example include/secrets.h   # fill in your WiFi SSID/password (2.4 GHz only)
 pio run -t upload
 ```
 
-書き込みモードに入らないときは、Atom のボタン(LED 面そのもの)を押しながら USB を挿す。
+If the board won't enter download mode, hold the button (the LED face itself) while plugging in USB.
 
-初回起動時はシリアルで IP と MAC を確認し、ルーターの DHCP 予約で IP を固定する:
+On first boot, read the IP and MAC from serial, then give the device a fixed IP via your router's DHCP reservation:
 
 ```bash
-pio device monitor   # "ready: http://<IP>" と "mac: <MAC>" が出る
+pio device monitor   # prints "ready: http://<IP>" and "mac: <MAC>"
 ```
 
-`platform = espressif32@6.9.0` は意図的なバージョン固定。勝手に上げないこと(NOTES.md 参照)。
+`platform = espressif32@6.9.0` is pinned on purpose — do not bump it casually (see NOTES.md).
 
-### 2. hook 設定
+### 2. Hook setup
 
-リポジトリの [`led.sh`](led.sh) を `~/.claude/led.sh` にコピーし、中の IP を自分の環境に合わせる:
+Copy [`led.sh`](led.sh) to `~/.claude/led.sh` and change the IP inside to match your device:
 
 ```bash
 cp led.sh ~/.claude/led.sh && chmod +x ~/.claude/led.sh
 ```
 
-led.sh は単なる curl ラッパーではなく、以下を担っている(詳細は NOTES.md):
+led.sh is more than a curl wrapper (details in NOTES.md):
 
-- stdin の hook JSON から `session_id` を抽出してセッション別に送信
-- AskUserQuestion(選択肢ダイアログ)の表示を wait に変換
-- ダイアログ応答待ち中はマーカーファイルを置き、サブエージェント等の
-  tool イベントによる赤の上書きを防ぐ(該当呼び出しの完了だけが解除できる)
-- 送信時刻(ms)を付与し、async hook の着弾順逆転をデバイス側で排除
+- Extracts `session_id` from the hook JSON on stdin and reports state per session
+- Converts AskUserQuestion (choice dialog) display into `wait`
+- While a dialog is awaiting your answer, keeps a marker file so that tool events
+  from subagents (which share the parent's session_id) can't overwrite the red —
+  only the completion of the awaited tool call clears it
+- Attaches a millisecond send timestamp so the device can drop out-of-order
+  updates from async hooks
 
-`~/.claude/settings.json` の `hooks` に以下をマージ(全イベント `"async": true` 必須):
+Merge the following into `hooks` in `~/.claude/settings.json` (`"async": true` on every event is required):
 
 ```json
 {
@@ -89,59 +93,58 @@ led.sh は単なる curl ラッパーではなく、以下を担っている(詳
 }
 ```
 
-Claude Code を再起動し、`/hooks` で読み込みを確認。
+Restart Claude Code and confirm the hooks are loaded with `/hooks`.
 
-## FAQ — 既知の挙動(検知済みだが対処不能なもの)
+## FAQ — known behaviors (detected, but nothing we can do)
 
-Claude Code の hook はダイアログへの「回答」や「中断」を通知しないため、
-以下は仕様として受け入れています。詳しい仕組みは [LIFECYCLE.md](LIFECYCLE.md) 参照。
+Claude Code's hooks do not report dialog *answers* or *interruptions*, so the following are accepted as-is. See [LIFECYCLE.md](LIFECYCLE.md) for the full picture.
 
-**Q. 承認(Yes)したのに赤のまま**
-承認の瞬間に発火するイベントが存在しません。次の信号は承認したコマンドの
-「完了」なので、赤の長さ = そのコマンドの実行時間です。長いビルドを承認すると
-実行中ずっと赤です。目安: 点滅の赤 = 未回答の可能性が高い、常灯の赤 = 回答済みで
-実行中の可能性が高い(点滅は最初の 30 秒だけ)。
+**Q. I approved (Yes) but it's still red**
+No event fires at the moment of approval. The next signal is the *completion* of the approved command, so the red lasts exactly as long as the command runs. Approve a long build and it stays red the whole time. Rule of thumb: blinking red = probably unanswered (first 30 s), steady red = probably answered and a long command is running.
 
-**Q. No で拒否 / Ctrl+C で中断したのに赤のまま**
-拒否・中断はどの hook イベントも発火しません(全イベントにロガーを仕込んで実測済み)。
-次のプロンプト入力で即復帰、放置でも 10 分で idle に戻ります。
+**Q. I denied (No) / hit Ctrl+C, but it's still red**
+Denial and interruption fire no hook event at all (verified empirically with a logger on every event). It recovers instantly on your next prompt, or falls back to idle after 10 minutes.
 
-**Q. 終わったはずなのに白の呼吸が続く**
-別のセッション(並行して開いている Claude Code)が作業中だとそちらが表示されます。
-`./led-test.sh status` でどのセッションが状態を握っているか確認できます。
-手動テスト送信の残留の場合は 2 分で自動失効します。
+**Q. It keeps breathing white after the turn should be over**
+Another concurrently open Claude Code session is probably working — the display aggregates all sessions. Run `./led-test.sh status` to see which session holds which state. Leftover manual test sends expire after 2 minutes.
 
-**Q. 何も点いていない**
-最後のイベントから 30 分で自動消灯します。故障ではなく、次のイベントで復帰します。
+**Q. Nothing is lit**
+It auto-offs 30 minutes after the last event. Not a failure — any event wakes it.
 
-**Q. 起動直後に紫が点いている**
-WiFi 接続中の表示です。点きっぱなしの場合は 2.4GHz の SSID か確認してください。
+**Q. It's purple right after boot**
+That's the WiFi-connecting indicator. If it stays purple, check that your SSID is 2.4 GHz.
 
 ## HTTP API
 
-| エンドポイント | 説明 |
+| Endpoint | Description |
 | :--- | :--- |
-| `GET /led?s=<state>&sid=<id>&ts=<ms>` | 状態送信。`state` は idle/tool/wait/done/err、`sid` はセッション ID(省略時 default)。`ts` より古い更新は棄却される(省略時は常に適用) |
-| `GET /rgb?r=&g=&b=` | 任意色を直接点灯(発光テスト用。次の `/led` か 10 分で通常動作に復帰) |
-| `GET /` | 集約状態・セッション数・uptime・RSSI |
+| `GET /led?s=<state>&sid=<id>&ts=<ms>` | Report state. `state` is idle/tool/wait/done/err; `sid` is a session ID (default: `default`). Updates older than the last applied `ts` are rejected (omit `ts` to always apply) |
+| `GET /rgb?r=&g=&b=` | Light an arbitrary color directly (for testing; returns to normal on the next `/led` or after 10 min) |
+| `GET /` | Aggregated state, session count/breakdown, uptime, RSSI |
 
-## 発光テスト
+## LED testing
 
 ```bash
-./led-test.sh coupon        # ケース素材の透過テスト(対話式。通常のターミナルで実行)
-./led-test.sh states        # 5 状態を順に再生
-./led-test.sh rgb 0 255 0   # 任意色を点灯
-./led-test.sh ramp 0 255 0  # 指定色を 8 段階で暗→明
-./led-test.sh status        # デバイスの状態確認
-./led-test.sh off           # idle に戻す
+./led-test.sh coupon        # translucency test for case material (interactive; run in a real terminal)
+./led-test.sh states        # replay the 5 states in order
+./led-test.sh rgb 0 255 0   # light an arbitrary color
+./led-test.sh ramp 0 255 0  # ramp a color through 8 brightness steps
+./led-test.sh status        # check device state
+./led-test.sh off           # back to idle
 ```
 
-## トラブルシュート
+The device address comes from the `ATOM` environment variable or a gitignored `.atom-ip` file next to the script.
 
-| 症状 | 対処 |
+## Troubleshooting
+
+| Symptom | Fix |
 | :--- | :--- |
-| LED が紫のまま | WiFi 未接続。2.4GHz の SSID か確認(5GHz 不可) |
-| 書き込みモードに入らない | ボタンを押しながら USB を挿す |
-| 承認待ちなのに赤くならない | `/hooks` で PermissionRequest の読み込みを確認 |
-| Claude Code が重い | hooks の `async: true` と curl の `-m 1` を確認 |
-| `pio device monitor` が動かない | TTY 必須のためバックグラウンド実行不可。NOTES.md の pyserial 手順を使う |
+| LED stays purple | WiFi not connected. Make sure the SSID is 2.4 GHz (5 GHz unsupported) |
+| Won't enter download mode | Hold the button while plugging in USB |
+| No red on permission prompts | Check `/hooks` shows PermissionRequest loaded |
+| Claude Code feels slow | Verify `async: true` on hooks and `-m 1` on curl |
+| `pio device monitor` fails | It needs a TTY and can't run in the background; use the pyserial recipe in NOTES.md |
+
+## Case
+
+The prototype case is a pixel-art Clawd figure with a dead-front heart window: 0.4 mm orange PLA skin over a white diffuser plate, with an 8–10 mm air gap to the LED. All state colors — including the dim idle blue — read through it. STL will be published on MakerWorld (link TBA).
