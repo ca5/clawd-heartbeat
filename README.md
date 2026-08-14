@@ -91,6 +91,8 @@ led.sh is more than a curl wrapper (details in docs/NOTES.md):
 - While a dialog is awaiting your answer, keeps a marker file so that tool events
   from subagents (which share the parent's session_id) can't overwrite the red —
   only the completion of the awaited tool call clears it
+- While a dialog is open, tails the session transcript to catch denials and
+  Ctrl+C interrupts (which fire no hook event) and clears the red within seconds
 - Attaches a millisecond send timestamp so the device can drop out-of-order
   updates from async hooks
 
@@ -123,7 +125,7 @@ Claude Code's hooks do not report dialog *answers* or *interruptions*, so the fo
 No event fires at the moment of approval. The next signal is the *completion* of the approved command, so the red lasts exactly as long as the command runs. Approve a long build and it stays red the whole time. Rule of thumb: blinking red = probably unanswered (first 30 s), steady red = probably answered and a long command is running.
 
 **Q. I denied (No) / hit Ctrl+C, but it's still red**
-Denial and interruption fire no hook event at all (verified empirically with a logger on every event). It recovers instantly on your next prompt, or falls back to idle after 10 minutes.
+Denial and interruption fire no hook event at all (verified empirically with a logger on every event). To compensate, led.sh watches the session transcript while a dialog is open and clears the red within a few seconds of a denial or interrupt (best effort — it string-matches transcript entries). Fallbacks if that misses: your next prompt clears it instantly, and it drops to idle after 10 minutes.
 
 **Q. It keeps breathing white after the turn should be over**
 Another concurrently open Claude Code session is probably working — the display aggregates all sessions. Run `./led-test.sh status` to see which session holds which state. Leftover manual test sends expire after 2 minutes.

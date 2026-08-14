@@ -11,7 +11,7 @@ A physical Claude Code status indicator: M5Atom Lite firmware (PlatformIO/C++) +
 ## Project map
 
 - `src/main.cpp` — firmware: per-session state, priority aggregation (`wait > err > done > tool > idle`), all colors/timings
-- `led.sh` — hook script (copy lives at `~/.claude/led.sh`): session_id extraction, AskUserQuestion→wait, dialog-wait marker (subagent overwrite protection), send timestamp
+- `led.sh` — hook script (copy lives at `~/.claude/led.sh`): session_id extraction, AskUserQuestion→wait, dialog-wait marker (subagent overwrite protection), send timestamp, transcript watcher that catches denials/interrupts (which fire no hook event)
 - `led-test.sh` — manual testing (`status` / `states` / `rgb` / `ramp` / `coupon`); device URL from `ATOM` env or gitignored `.atom-ip`
 - `led-demo.sh` — non-interactive animation playback for filming/verification (`states` / `story` / `wait-full`, `--solo` to stop other sessions overriding it)
 - `docs/NOTES.md` — design decisions + empirically measured hook behavior (Japanese)

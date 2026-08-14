@@ -3,7 +3,44 @@
 # - stdin の hook JSON から session_id を抽出してセッション別に送る
 # - ダイアログ(権限確認 / AskUserQuestion)表示中はマーカーを置き、
 #   サブエージェント等の tool イベントによる赤の上書きを防ぐ
+# - 拒否・中断は hook に流れないため、ダイアログ表示中だけトランスクリプトを
+#   監視して痕跡(拒否の tool_result / 中断メッセージ)を検知したら赤を解除する
 # - 手動実行(tty)時は stdin を読まず sid=default で送る
+
+# ↓ 自分の Atom Lite の固定 IP に書き換える
+ATOM_URL="http://192.168.1.50"
+
+now_ms() { perl -MTime::HiRes=time -e 'printf("%.0f", time()*1000)' 2>/dev/null || echo 0; }
+send_state() { curl -s -m 1 --retry 2 --retry-all-errors "$ATOM_URL/led?s=$1&sid=${2:-default}&ts=$(now_ms)" >/dev/null 2>&1; }
+file_size() { stat -f%z "$1" 2>/dev/null || stat -c%s "$1" 2>/dev/null || echo 0; }
+
+# ダイアログ応答待ちの間、トランスクリプト(JSONL)の追記分を 1 秒間隔で監視する。
+# 「No で拒否」「Ctrl+C で中断」はどの hook イベントも発火しない(実測)が、
+# トランスクリプトには即座に記録されるため、それを検知して赤を解除する。
+# パターンは実際の JSONL 構造への構造的マッチ(会話文中の引用は \" にエスケープ
+# されるため誤発火しない)。マーカーが消えたら通常経路で解決済みとして終了。
+watch_dialog() {
+  local tr="$1" marker="$2" sid="$3"
+  local deny='"content"[[:space:]]*:[[:space:]]*"The user doesn'\''t want to proceed with this tool use'
+  local intr='"text"[[:space:]]*:[[:space:]]*"\[Request interrupted by user'
+  local size new end
+  size=$(file_size "$tr")
+  end=$(( $(date +%s) + 600 ))     # マーカーの TTL と同じ 10 分で自然終了
+  while [ "$(date +%s)" -lt "$end" ]; do
+    sleep 1
+    [ -f "$marker" ] || return 0   # 承認完了・新プロンプト等の通常経路で解決済み
+    new=$(file_size "$tr")
+    if [ "$new" -gt "$size" ]; then
+      if tail -c +"$((size + 1))" "$tr" 2>/dev/null | grep -Eq "$deny|$intr"; then
+        rm -f "$marker"
+        send_state idle "$sid"     # ターンが続く場合は直後の hook がすぐ上書きする
+        return 0
+      fi
+      size=$new
+    fi
+  done
+}
+
 state="$1"
 sid=""
 if [ ! -t 0 ]; then
@@ -19,7 +56,7 @@ if [ ! -t 0 ]; then
 
   # マーカーの TTL(10分): 解除イベントの取りこぼしで赤が永続しないように
   if [ -f "$marker" ]; then
-    age=$(( $(date +%s) - $(stat -f %m "$marker" 2>/dev/null || echo 0) ))
+    age=$(( $(date +%s) - $(stat -f %m "$marker" 2>/dev/null || stat -c %Y "$marker" 2>/dev/null || echo 0) ))
     [ "$age" -gt 600 ] && rm -f "$marker"
   fi
 
@@ -46,30 +83,35 @@ if [ ! -t 0 ]; then
         printf '%s %s' "-" "$tool" > "$marker"            # 補完失敗時はツール名だけで照合
       fi
     fi
+    # 拒否・中断の監視を起動(ダイアログ 1 回ごとの短命プロセス)
+    tpath=$(jget transcript_path)
+    if [ -n "$tpath" ] && [ -f "$tpath" ]; then
+      ( watch_dialog "$tpath" "$marker" "${sid:-default}" ) </dev/null >/dev/null 2>&1 &
+    fi
   elif [ "$state" = "tool" ] && [ -f "$marker" ]; then
-    mtuid=""; mtool=""
-    read -r mtuid mtool < "$marker"
+    # ダイアログ応答待ち中に届く tool イベントの扱い:
+    # サブエージェントは同じ session_id で hook を発火し続けるため、
+    # そのまま送ると赤(wait)が白(tool)に上書きされてしまう
     case "$event" in
       UserPromptSubmit)
-        rm -f "$marker"    # 新しいプロンプト = ダイアログは解決済み
+        rm -f "$marker"       # 新しいプロンプト = ダイアログは解決済み
         ;;
       PostToolUse|PostToolUseFailure)
-        if { [ "$mtuid" != "-" ] && [ "$tuid" = "$mtuid" ]; } \
-           || { [ "$mtuid" = "-" ] && [ "$tool" = "$mtool" ]; }; then
-          rm -f "$marker"  # 待っていた呼び出しの完了 = ダイアログ応答済み
+        waiting=""; wtool=""
+        read -r waiting wtool < "$marker" 2>/dev/null || true
+        if { [ "$waiting" != "-" ] && [ "$tuid" = "$waiting" ]; } \
+           || { [ "$waiting" = "-" ] && [ "$tool" = "$wtool" ]; }; then
+          rm -f "$marker"     # 待っていた呼び出しの完了 = ダイアログ応答済み
         else
-          state="wait"     # 別の呼び出し(サブエージェント等)の完了: 赤を維持
+          state="wait"        # 別の呼び出し(サブエージェント等)の完了: 赤を維持
         fi
         ;;
       *)
-        state="wait"       # ダイアログ待ち中の PreToolUse 等も赤を維持
+        state="wait"          # ダイアログ待ち中の PreToolUse 等も赤を維持
         ;;
     esac
   elif [ "$state" != "tool" ]; then
     rm -f "$marker" "$pending"   # done / err / idle でダイアログ待ちは終了
   fi
 fi
-# 送信時刻(ms)。async hook + リトライによる着弾順の逆転をデバイス側で排除するために使う
-ts=$(perl -MTime::HiRes=time -e 'printf("%.0f", time()*1000)' 2>/dev/null || echo 0)
-# ↓ 自分の Atom Lite の固定 IP に書き換える
-exec curl -s -m 1 --retry 2 --retry-all-errors "http://192.168.1.50/led?s=$state&sid=${sid:-default}&ts=$ts" >/dev/null 2>&1
+send_state "$state" "$sid"

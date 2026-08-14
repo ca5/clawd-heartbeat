@@ -130,6 +130,29 @@ led.sh / led-test.sh をターミナルから手で叩くと `default` セッシ
 default だけ失効を DEFAULT_STALE_MS(2 分)に短縮。テスト後は `./led-test.sh off` で
 明示的に idle に戻すのが行儀としては正しい。
 
+### 拒否・中断をトランスクリプト監視で検知(2026-08-14)
+
+「No / Ctrl+C はどの hook でも検知不可能」の結論は hook の世界では今も正しいが、
+[claude-session-browser](https://github.com/juppeee/claude-session-browser) が
+トランスクリプト(JSONL)を tail して状態推測しているのを見て、盲点の補完に採用した。
+
+- 拒否 → `"content": "The user doesn't want to proceed with this tool use..."` の
+  tool_result、中断 → `"text": "[Request interrupted by user]"` が**即座に**記録される
+  (実セッションのトランスクリプトから実測)
+- led.sh がダイアログのマーカー作成時に短命の監視プロセスを spawn し、
+  hook JSON の transcript_path の追記分を 1 秒間隔で監視。検知したら marker 削除 + idle 送信
+- **構造的マッチ**が重要: 会話文中で同じ文字列を引用すると JSON 内では `\"` に
+  エスケープされるため、`"content": "The user...` のようにフィールド構造ごと
+  マッチすれば誤発火しない(偽陽性テスト済み)
+- 監視はマーカー消失(通常経路で解決)か 10 分(マーカー TTL と同じ)で自然終了。
+  常駐デーモンなし
+- 文字列は Claude Code のバージョンで変わり得るベストエフォート。取りこぼしても
+  従来の保険(次プロンプト / 10 分 TTL)がそのまま効く
+
+なお同ツールの「トランスクリプトだけで全状態を推測」への全面移行はしない。
+permission prompt はトランスクリプトに記録されず(同ツールの README にも明記)、
+承認待ちの検知は hooks(PermissionRequest)の方が確実なため。hooks 主 + 監視補完。
+
 ### 自動消灯(2026-08-06)
 
 最後の HTTP リクエストから 30 分(`OFF_MS`)で完全消灯、次のリクエストで復帰。
