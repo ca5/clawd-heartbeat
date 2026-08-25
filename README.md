@@ -29,6 +29,7 @@ Supplementary docs (currently in Japanese):
 | `wait` | Red 400 ms blink for 30 s, then steady red (idle after 10 min) | PermissionRequest / AskUserQuestion dialog (detected in led.sh) |
 | `done` | Green 150 ms blink for 6 s | Stop |
 | `err` | Red fast blink (120 ms) | StopFailure |
+| rainbow | Rainbow swirl for 10 s, then back to the current state | Pressing the front button (the LED face) |
 | off | Auto-off 30 min after the last request; any request wakes it | — |
 
 ![The heart cycling through idle, working, waiting for approval, and done](docs/img/demo.gif)
