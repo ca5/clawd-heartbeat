@@ -10,6 +10,8 @@ const uint8_t BRIGHTNESS = 255;     // ケース(拡散シェード)前提で最
 // ----------------------
 
 #define LED_PIN 27
+#define BTN_PIN 39                        // 本体前面ボタン(押下で LOW)
+#define RAINBOW_MS 10000UL                // ボタン押下でレインボー表示する時間
 #define STALE_MS (10UL * 60UL * 1000UL)   // 10分更新がないセッションは失効
 #define DEFAULT_STALE_MS (2UL * 60UL * 1000UL) // 手動送信(sid=default)は 2分で失効(テストの残留対策)
 #define OFF_MS   (30UL * 60UL * 1000UL)   // 30分リクエストがなければ消灯
@@ -42,6 +44,8 @@ unsigned long lastRequest = 0;
 bool rawActive = false;           // 発光テスト(/rgb)の直接制御中
 CRGB rawColor = CRGB::Black;
 unsigned long rawSince = 0;
+
+unsigned long rainbowUntil = 0;   // ボタン押下によるレインボー表示の終了時刻
 
 Session* findSlot(const String& sid) {
   for (auto& s : sessions) if (s.used && sid == s.id) return &s;
@@ -135,6 +139,13 @@ int activeSessions(unsigned long now) {
 void render() {
   unsigned long now = millis();
 
+  // ボタン押下によるレインボー(10 秒): 何よりも優先して表示
+  if (now < rainbowUntil) {
+    leds[0] = CHSV((uint8_t)(now / 8), 255, 255);   // 約 2 秒で色相一周
+    FastLED.show();
+    return;
+  }
+
   // 30分リクエストがなければ消灯(次のリクエストで復帰)
   if (now - lastRequest > OFF_MS) {
     leds[0] = CRGB::Black;
@@ -197,6 +208,7 @@ void connectWiFi() {
 
 void setup() {
   Serial.begin(115200);
+  pinMode(BTN_PIN, INPUT);   // GPIO39 は入力専用・基板側プルアップ、押下で LOW
   FastLED.addLeds<WS2812B, LED_PIN, GRB>(leds, 1);
   FastLED.setBrightness(BRIGHTNESS);
   leds[0] = CRGB::Purple; FastLED.show();   // 接続中の目印
@@ -238,6 +250,18 @@ void setup() {
 
 void loop() {
   server.handleClient();
+
+  // 前面ボタン: 押下(立ち下がり)でレインボー 10 秒。消灯中でも起きる
+  static bool btnPrev = true;
+  static unsigned long btnLast = 0;
+  bool btn = digitalRead(BTN_PIN);
+  if (btnPrev && !btn && millis() - btnLast > 250) {   // 250ms デバウンス
+    btnLast = millis();
+    rainbowUntil = millis() + RAINBOW_MS;
+    lastRequest = millis();   // 自動消灯タイマーもリセット(押せば必ず光る)
+  }
+  btnPrev = btn;
+
   render();
 
   // WiFi 断の復旧（数週間置きっぱなしにする前提）

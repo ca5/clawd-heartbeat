@@ -27,6 +27,7 @@ Claude Code hooks ──HTTP GET──> M5Atom Lite (WebServer:80) ──> FastL
 | `wait` | 赤の 400ms 点滅 × 30 秒 → 赤の常時点灯(10 分で idle へ) | PermissionRequest / AskUserQuestion の表示(led.sh 内で判定) |
 | `done` | 緑の 150ms 点滅 × 6 秒 | Stop |
 | `err` | 赤の 120ms 高速点滅 | StopFailure |
+| レインボー | 10 秒間の虹色スワール、終了後は元の状態表示に戻る | 前面ボタン(LED 面)の押下 |
 | 消灯 | 最後のリクエストから 30 分で自動消灯、次のリクエストで復帰 | — |
 
 ![待機・作業中・承認待ち・完了のサイクル](docs/img/demo.gif)
