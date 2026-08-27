@@ -45,7 +45,8 @@ bool rawActive = false;           // 発光テスト(/rgb)の直接制御中
 CRGB rawColor = CRGB::Black;
 unsigned long rawSince = 0;
 
-unsigned long rainbowUntil = 0;   // ボタン押下によるレインボー表示の終了時刻
+bool rainbowActive = false;       // ボタン押下によるレインボー表示中
+unsigned long rainbowSince = 0;   // レインボー開始時刻
 
 Session* findSlot(const String& sid) {
   for (auto& s : sessions) if (s.used && sid == s.id) return &s;
@@ -140,10 +141,14 @@ void render() {
   unsigned long now = millis();
 
   // ボタン押下によるレインボー(10 秒): 何よりも優先して表示
-  if (now < rainbowUntil) {
-    leds[0] = CHSV((uint8_t)(now / 8), 255, 255);   // 約 2 秒で色相一周
-    FastLED.show();
-    return;
+  // 減算で判定(millis() オーバーフロー対策。絶対値比較だと 49.7 日周回後に誤発動する)
+  if (rainbowActive) {
+    if (now - rainbowSince < RAINBOW_MS) {
+      leds[0] = CHSV((uint8_t)(now / 8), 255, 255);   // 約 2 秒で色相一周
+      FastLED.show();
+      return;
+    }
+    rainbowActive = false;
   }
 
   // 30分リクエストがなければ消灯(次のリクエストで復帰)
@@ -257,7 +262,8 @@ void loop() {
   bool btn = digitalRead(BTN_PIN);
   if (btnPrev && !btn && millis() - btnLast > 250) {   // 250ms デバウンス
     btnLast = millis();
-    rainbowUntil = millis() + RAINBOW_MS;
+    rainbowSince = millis();
+    rainbowActive = true;
     lastRequest = millis();   // 自動消灯タイマーもリセット(押せば必ず光る)
   }
   btnPrev = btn;
