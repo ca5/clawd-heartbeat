@@ -10,10 +10,16 @@ M5Atom Lite の LED 1 粒で Claude Code の実行状態を表示するステー
 ![4 つの状態](docs/img/thumbnail.jpg)
 
 ```
-Claude Code hooks ──HTTP GET──> M5Atom Lite (WebServer:80) ──> FastLED ──> SK6812
+Claude Code hooks ──HTTP GET(WiFi)──────┐
+                                         ├──> M5Atom Lite ──> FastLED ──> SK6812
+Claude Code hooks ──行コマンド(USB)─────┘
 ```
 
-設計の経緯・不採用案(シリアル直叩き等)は [`HANDOFF.md`](docs/HANDOFF.md)、
+送信経路は 2 つ、プロトコルは共通。WiFi なら hook が HTTP GET を投げ、USB ならシリアルポートに 1 行書く。
+USB 電源さえあれば机のどこにでも置ける WiFi が基本だが、Atom と Mac が同じネットワークに
+いられない環境(端末間通信を遮断する来客用 WiFi、802.1X の社内 WiFi、DHCP 予約不可)では USB シリアルを使う。
+
+設計の経緯・不採用案(シリアル直叩きがリセットを起こす理由。USB 経路はこれを回避している、NOTES.md 参照)は [`HANDOFF.md`](docs/HANDOFF.md)、
 構築後の運用情報・設計判断ログは [`NOTES.md`](docs/NOTES.md)、
 イベントのライフサイクルと LED の対応(「Yes 押したのに赤いまま」の理由など)は
 [`LIFECYCLE.md`](docs/LIFECYCLE.md) を参照。
@@ -52,7 +58,7 @@ Claude Code hooks ──HTTP GET──> M5Atom Lite (WebServer:80) ──> FastL
 
 このリポジトリには `CLAUDE.md` とスキル 2 つが同梱されています。clone して中で Claude Code を開き、こう言うだけ:
 
-> **「セットアップして」** — WiFi 設定 → 書き込み → IP 固定 → hook 設定を、各ステップ検証しながら対話的に進めます
+> **「セットアップして」** — 経路の選択(WiFi / USB シリアル)→ 書き込み → 宛先の確認 → hook 設定を、各ステップ検証しながら対話的に進めます
 >
 > **「緑がケース越しだと暗い」**(色・明るさの不満なんでも)— `led-tuning` スキルが、あなたのフィラメントでの実測 → 調整 → 書き込みのループを回します
 
@@ -63,29 +69,38 @@ Claude Code hooks ──HTTP GET──> M5Atom Lite (WebServer:80) ──> FastL
 要件: [PlatformIO Core CLI](https://platformio.org/)(`brew install platformio`)
 
 ```bash
-cp include/secrets.h.example include/secrets.h   # WiFi の SSID / パスワードを記入(2.4GHz のみ)
+cp include/secrets.h.example include/secrets.h   # WiFi の SSID / パスワードを記入(2.4GHz のみ)。USB シリアルだけで使うなら SSID は空でよい
 pio run -t upload
 ```
 
 書き込みモードに入らないときは、Atom のボタン(LED 面そのもの)を押しながら USB を挿す。
 
-初回起動時はシリアルで IP と MAC を確認し、ルーターの DHCP 予約で IP を固定する:
+**WiFi 経路**: 初回起動時はシリアルで IP と MAC を確認し、ルーターの DHCP 予約で IP を固定する:
 
 ```bash
 pio device monitor   # "ready: http://<IP>" と "mac: <MAC>" が出る
 ```
 
+**USB シリアル経路**: IP は不要。`ls /dev/cu.usbserial-*` でポートを確認し(名前はチップのシリアル番号由来なので抜き差ししても変わらない)、疎通を見る:
+
+```bash
+echo /dev/cu.usbserial-XXXXXXXX > .atom-ip   # gitignore 済み。led-test.sh / led-demo.sh が読む
+./led-test.sh status                          # state=idle ... が返れば OK
+```
+
+WiFi は任意。SSID を空にすると WiFi を一切使わず(起動時の紫も出ない)、SSID があれば両経路が同時に使える。WiFi が切れてもデバイスは再起動しなくなった。
+
 `platform = espressif32@6.9.0` は意図的なバージョン固定。勝手に上げないこと(docs/NOTES.md 参照)。
 
 ### 2. hook 設定
 
-リポジトリの [`led.sh`](led.sh) を `~/.claude/led.sh` にコピーし、中の IP を自分の環境に合わせる:
+リポジトリの [`led.sh`](led.sh) を `~/.claude/led.sh` にコピーし、冒頭で経路を設定する。USB なら `ATOM_SERIAL` にポートのパス、WiFi なら空のままにして `ATOM_URL` に固定 IP:
 
 ```bash
 cp led.sh ~/.claude/led.sh && chmod +x ~/.claude/led.sh
 ```
 
-led.sh は単なる curl ラッパーではなく、以下を担っている(詳細は docs/NOTES.md):
+led.sh は単なる送信ラッパーではなく、以下を担っている(詳細は docs/NOTES.md):
 
 - stdin の hook JSON から `session_id` を抽出してセッション別に送信
 - AskUserQuestion(選択肢ダイアログ)の表示を wait に変換
@@ -94,6 +109,8 @@ led.sh は単なる curl ラッパーではなく、以下を担っている(詳
 - ダイアログ表示中はトランスクリプトを監視し、hook に流れない「拒否」「Ctrl+C 中断」を
   検知して数秒で赤を解除する
 - 送信時刻(ms)を付与し、async hook の着弾順逆転をデバイス側で排除
+- USB ではポートを `-hupcl` で開き、DTR/RTS を動かさない(動くと hook のたびにボードが
+  リセットされる。シリアル案が当初不採用だった理由)
 
 `~/.claude/settings.json` の `hooks` に以下をマージ(全イベント `"async": true` 必須):
 
@@ -144,13 +161,15 @@ Claude Code の hook はダイアログへの「回答」や「中断」を通�
 **Q. 起動直後に紫が点いている**
 WiFi 接続中の表示です。点きっぱなしの場合は 2.4GHz の SSID か確認してください。
 
-## HTTP API
+## デバイス API(HTTP / シリアル)
 
-| エンドポイント | 説明 |
-| :--- | :--- |
-| `GET /led?s=<state>&sid=<id>&ts=<ms>` | 状態送信。`state` は idle/tool/wait/done/err、`sid` はセッション ID(省略時 default)。`ts` より古い更新は棄却される(省略時は常に適用) |
-| `GET /rgb?r=&g=&b=` | 任意色を直接点灯(発光テスト用。次の `/led` か 10 分で通常動作に復帰) |
-| `GET /` | 集約状態・セッション数・uptime・RSSI |
+同じ 3 コマンドが両経路で使える。シリアルは 115200bps、1 行 1 コマンド(改行終端)。応答は 1 行(`ok` / `stale` / `unknown state`)、`status` だけは内訳のあとに空行が付く。
+
+| HTTP | シリアル | 説明 |
+| :--- | :--- | :--- |
+| `GET /led?s=<state>&sid=<id>&ts=<ms>` | `led s=<state> sid=<id> ts=<ms>` | 状態送信。`state` は idle/tool/wait/done/err、`sid` はセッション ID(省略時 default)。`ts` より古い更新は棄却される(省略時は常に適用) |
+| `GET /rgb?r=&g=&b=` | `rgb r= g= b=` | 任意色を直接点灯(発光テスト用。次の `led` か 10 分で通常動作に復帰) |
+| `GET /` | `status` | 集約状態・セッション数・uptime・RSSI・WiFi 状態(`off` / `connecting` / IP) |
 
 ## 発光テスト
 
@@ -180,10 +199,12 @@ WiFi 接続中の表示です。点きっぱなしの場合は 2.4GHz の SSID �
 
 | 症状 | 対処 |
 | :--- | :--- |
-| LED が紫のまま | WiFi 未接続。2.4GHz の SSID か確認(5GHz 不可) |
+| LED が紫のまま | WiFi 未接続。2.4GHz の SSID か確認(5GHz 不可)。紫は 20 秒で諦めて青になる。USB なら最初のコマンドで即終わる |
+| WiFi で hook がデバイスに届かない | 来客用・社内 WiFi は端末間通信を遮断していることが多い(クライアント分離)。USB シリアル経路に切り替える |
+| hook のたびにデバイスが再起動する(USB) | `-hupcl` なしでポートを開く何か(シリアルモニタ等)が動いている。閉じる。led.sh 自身の送信では DTR/RTS は動かない |
 | 書き込みモードに入らない | ボタンを押しながら USB を挿す |
 | 承認待ちなのに赤くならない | `/hooks` で PermissionRequest の読み込みを確認 |
-| Claude Code が重い | hooks の `async: true` と curl の `-m 1` を確認 |
+| Claude Code が重い | hooks の `async: true`(WiFi なら curl の `-m 1` も)を確認 |
 | `pio device monitor` が動かない | TTY 必須のためバックグラウンド実行不可。docs/NOTES.md の pyserial 手順を使う |
 
 ## ケース

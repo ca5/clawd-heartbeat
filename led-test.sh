@@ -10,14 +10,51 @@
 set -eu
 
 # 宛先の決定: 環境変数 ATOM > .atom-ip ファイル(gitignore 済み) > プレースホルダ
+# 値が /dev/ で始まれば USB シリアル(例: /dev/cu.usbserial-XXXX)、それ以外は HTTP の URL
 here=$(cd "$(dirname "$0")" && pwd)
 if [ -z "${ATOM:-}" ] && [ -f "$here/.atom-ip" ]; then
   ATOM=$(cat "$here/.atom-ip")
 fi
 ATOM="${ATOM:-http://192.168.1.50}"
 
-rgb() { curl -s -m 2 "$ATOM/rgb?r=$1&g=$2&b=$3" >/dev/null; }
-led() { curl -s -m 2 "$ATOM/led?s=$1" >/dev/null; }
+# コマンド送信の抽象化。引数はシリアル形式で渡し、HTTP のときは URL に変換する:
+#   atom_send "led s=idle sid=demo"  →  シリアル: そのまま 1 行 / HTTP: /led?s=idle&sid=demo
+#   atom_send status                 →  シリアル: 応答を空行まで読む / HTTP: GET /
+# シリアルは open/close で DTR/RTS が動くとボードがリセットされるため -hupcl を毎回セットする
+# (led.sh と同じ対策)。応答は "state=" 行が来るまでのノイズ(古い ok 等)を読み飛ばす
+atom_send() {
+  local cmd="$1" path rest line started=0
+  set -- $cmd
+  path="$1"; shift
+  case "$ATOM" in
+    /dev/*)
+      [ -c "$ATOM" ] || { echo "シリアルポートが見つかりません: $ATOM" >&2; return 1; }
+      {
+        stty raw -echo -hupcl clocal 115200 <&3 2>/dev/null
+        printf '%s\n' "$cmd" >&3
+        if [ "$path" = status ]; then
+          while IFS= read -r -t 2 line <&3; do
+            line=${line%$'\r'}
+            case "$line" in state=*) started=1 ;; esac
+            [ "$started" -eq 1 ] || continue
+            [ -n "$line" ] || break
+            printf '%s\n' "$line"
+          done
+        else
+          { IFS= read -r -t 1 line <&3 && printf '%s\n' "${line%$'\r'}"; } || true   # 応答なしでも失敗にしない(set -e 対策)
+        fi
+      } 3<>"$ATOM" 2>/dev/null
+      ;;
+    *)
+      rest=$(IFS='&'; printf '%s' "$*")
+      [ "$path" = status ] && path=""
+      curl -s -m 2 "$ATOM/$path${rest:+?$rest}"
+      ;;
+  esac
+}
+
+rgb() { atom_send "rgb r=$1 g=$2 b=$3" >/dev/null; }
+led() { atom_send "led s=$1" >/dev/null; }
 
 case "${1:-}" in
   coupon)
@@ -41,7 +78,7 @@ case "${1:-}" in
     ;;
   rgb)
     rgb "${2:?r}" "${3:?g}" "${4:?b}"
-    echo "rgb($2, $3, $4) 点灯中(/led を叩くか 10 分で通常動作に戻ります)"
+    echo "rgb($2, $3, $4) 点灯中(led 状態を送るか 10 分で通常動作に戻ります)"
     ;;
   ramp)
     r="${2:?r}"; g="${3:?g}"; b="${4:?b}"
@@ -55,11 +92,11 @@ case "${1:-}" in
     echo "idle に戻しました"
     ;;
   status)
-    curl -s -m 2 "$ATOM/"
+    atom_send status
     ;;
   send)
     # 順序保証(ts)等のデバッグ用: ./led-test.sh send <state> <sid> <ts>
-    curl -s -m 2 "$ATOM/led?s=${2:?state}&sid=${3:-default}&ts=${4:-0}"
+    atom_send "led s=${2:?state} sid=${3:-default} ts=${4:-0}"
     ;;
   *)
     grep '^#   ' "$0" | sed 's/^#   //'

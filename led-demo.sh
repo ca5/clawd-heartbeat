@@ -17,11 +17,48 @@
 set -eu
 
 # 宛先の決定: 環境変数 ATOM > .atom-ip ファイル(gitignore 済み) > プレースホルダ
+# 値が /dev/ で始まれば USB シリアル(例: /dev/cu.usbserial-XXXX)、それ以外は HTTP の URL
 here=$(cd "$(dirname "$0")" && pwd)
 if [ -z "${ATOM:-}" ] && [ -f "$here/.atom-ip" ]; then
   ATOM=$(cat "$here/.atom-ip")
 fi
 ATOM="${ATOM:-http://192.168.1.50}"
+
+# コマンド送信の抽象化。引数はシリアル形式で渡し、HTTP のときは URL に変換する:
+#   atom_send "led s=idle sid=demo"  →  シリアル: そのまま 1 行 / HTTP: /led?s=idle&sid=demo
+#   atom_send status                 →  シリアル: 応答を空行まで読む / HTTP: GET /
+# シリアルは open/close で DTR/RTS が動くとボードがリセットされるため -hupcl を毎回セットする
+# (led.sh と同じ対策)。応答は "state=" 行が来るまでのノイズ(古い ok 等)を読み飛ばす
+atom_send() {
+  local cmd="$1" path rest line started=0
+  set -- $cmd
+  path="$1"; shift
+  case "$ATOM" in
+    /dev/*)
+      [ -c "$ATOM" ] || { echo "シリアルポートが見つかりません: $ATOM" >&2; return 1; }
+      {
+        stty raw -echo -hupcl clocal 115200 <&3 2>/dev/null
+        printf '%s\n' "$cmd" >&3
+        if [ "$path" = status ]; then
+          while IFS= read -r -t 2 line <&3; do
+            line=${line%$'\r'}
+            case "$line" in state=*) started=1 ;; esac
+            [ "$started" -eq 1 ] || continue
+            [ -n "$line" ] || break
+            printf '%s\n' "$line"
+          done
+        else
+          { IFS= read -r -t 1 line <&3 && printf '%s\n' "${line%$'\r'}"; } || true   # 応答なしでも失敗にしない(set -e 対策)
+        fi
+      } 3<>"$ATOM" 2>/dev/null
+      ;;
+    *)
+      rest=$(IFS='&'; printf '%s' "$*")
+      [ "$path" = status ] && path=""
+      curl -s -m 2 "$ATOM/$path${rest:+?$rest}"
+      ;;
+  esac
+}
 
 mode="states"
 loop=0
@@ -38,12 +75,12 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-send() { curl -s -m 2 "$ATOM/led?s=$1&sid=demo" >/dev/null; }
+send() { atom_send "led s=$1 sid=demo" >/dev/null; }
 
 # 他セッションが動いていると優先度集約で上書きされるので警告する
 check_conflict() {
   local others
-  others=$(curl -s -m 2 "$ATOM/" 2>/dev/null | awk 'NR>4 && $2 != "idle" && $1 != "demo" {print "  " $0}') || return 0
+  others=$(atom_send status 2>/dev/null | awk '/^  / && $2 != "idle" && $1 != "demo" {print "  " $0}') || return 0
   if [ -n "$others" ]; then
     echo "⚠ 他のセッションが待機中以外の状態です。再生が上書きされる可能性があります:"
     echo "$others"
@@ -56,9 +93,9 @@ check_conflict() {
 # 実セッションの表示は次の hook イベントで自然に復帰するので副作用は一時的。
 silence_others() {
   local ids id
-  ids=$(curl -s -m 2 "$ATOM/" 2>/dev/null | awk 'NR>4 && $1 != "demo" {print $1}') || return 0
+  ids=$(atom_send status 2>/dev/null | awk '/^  / && $1 != "demo" {print $1}') || return 0
   for id in $ids; do
-    curl -s -m 2 "$ATOM/led?s=idle&sid=$id" >/dev/null 2>&1 || true
+    atom_send "led s=idle sid=$id" >/dev/null 2>&1 || true
   done
   [ -n "$ids" ] && echo "他セッションを idle にしました: $(echo "$ids" | tr '\n' ' ')"
   return 0

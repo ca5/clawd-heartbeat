@@ -11,14 +11,18 @@ Put it inside a 3D-printed Clawd figure with a dead-front heart window, and you 
 ![Clawd Heartbeat showing four states](docs/img/thumbnail.jpg)
 
 ```
-Claude Code hooks ──HTTP GET──> M5Atom Lite (WebServer:80) ──> FastLED ──> SK6812
+Claude Code hooks ──HTTP GET (WiFi)──────┐
+                                         ├──> M5Atom Lite ──> FastLED ──> SK6812
+Claude Code hooks ──line command (USB)───┘
 ```
+
+Two transports, same protocol: over WiFi the hook sends an HTTP GET; over USB it writes one line to the serial port. Pick WiFi when the Atom can sit anywhere on your desk with just a USB power source; pick USB serial when the Atom and the Mac can't share a network (office guest WiFi with client isolation, corporate 802.1X, no DHCP reservations).
 
 Supplementary docs (currently in Japanese):
 
 - [`LIFECYCLE.md`](docs/LIFECYCLE.md) — how Claude Code's hook events map to LED states, including the blind spots (why the LED stays red after you hit Yes, etc.)
 - [`NOTES.md`](docs/NOTES.md) — design decision log and empirically measured hook behavior that the official docs don't cover
-- [`HANDOFF.md`](docs/HANDOFF.md) — original design rationale and rejected alternatives (e.g. why serial doesn't work on the Atom Lite)
+- [`HANDOFF.md`](docs/HANDOFF.md) — original design rationale and rejected alternatives (including why naive serial resets the Atom Lite — the USB transport works around that, see NOTES.md)
 
 ## LED states
 
@@ -52,7 +56,7 @@ Note on the pink heart: `tool` drives the LED white, but orange PLA absorbs gree
 
 This repo ships with a `CLAUDE.md` and two skills. Clone it, open Claude Code inside, and just say:
 
-> **"set this up"** — walks you through WiFi config, flashing, fixing the IP, and hook installation, verifying each step
+> **"set this up"** — walks you through choosing a transport (WiFi or USB serial), flashing, addressing the device, and hook installation, verifying each step
 >
 > **"the green looks dim through my case"** (or any color/brightness complaint) — the `led-tuning` skill measures translucency with your actual filament and adjusts colors iteratively
 
@@ -63,29 +67,38 @@ The manual steps below are the same procedure, if you prefer doing it yourself.
 Requirement: [PlatformIO Core CLI](https://platformio.org/) (`brew install platformio`)
 
 ```bash
-cp include/secrets.h.example include/secrets.h   # fill in your WiFi SSID/password (2.4 GHz only)
+cp include/secrets.h.example include/secrets.h   # fill in your WiFi SSID/password (2.4 GHz only), or leave the SSID empty for USB-serial-only
 pio run -t upload
 ```
 
 If the board won't enter download mode, hold the button (the LED face itself) while plugging in USB.
 
-On first boot, read the IP and MAC from serial, then give the device a fixed IP via your router's DHCP reservation:
+**WiFi transport**: on first boot, read the IP and MAC from serial, then give the device a fixed IP via your router's DHCP reservation:
 
 ```bash
 pio device monitor   # prints "ready: http://<IP>" and "mac: <MAC>"
 ```
 
+**USB serial transport**: no IP needed. Find the port with `ls /dev/cu.usbserial-*` (the name is derived from the chip's serial number, so it stays stable across replugs) and check the link:
+
+```bash
+echo /dev/cu.usbserial-XXXXXXXX > .atom-ip   # gitignored; led-test.sh / led-demo.sh read it
+./led-test.sh status                          # should print state=idle ...
+```
+
+WiFi is optional: with an empty SSID the firmware skips WiFi entirely (no purple boot phase). With an SSID set, both transports work at once and a WiFi outage no longer reboots the device.
+
 `platform = espressif32@6.9.0` is pinned on purpose — do not bump it casually (see docs/NOTES.md).
 
 ### 2. Hook setup
 
-Copy [`led.sh`](led.sh) to `~/.claude/led.sh` and change the IP inside to match your device:
+Copy [`led.sh`](led.sh) to `~/.claude/led.sh` and set the transport at the top: `ATOM_SERIAL` (USB port path) for serial, or leave it empty and set `ATOM_URL` for WiFi:
 
 ```bash
 cp led.sh ~/.claude/led.sh && chmod +x ~/.claude/led.sh
 ```
 
-led.sh is more than a curl wrapper (details in docs/NOTES.md):
+led.sh is more than a send wrapper (details in docs/NOTES.md):
 
 - Extracts `session_id` from the hook JSON on stdin and reports state per session
 - Converts AskUserQuestion (choice dialog) display into `wait`
@@ -96,6 +109,8 @@ led.sh is more than a curl wrapper (details in docs/NOTES.md):
   Ctrl+C interrupts (which fire no hook event) and clears the red within seconds
 - Attaches a millisecond send timestamp so the device can drop out-of-order
   updates from async hooks
+- Over USB, opens the port with `-hupcl` so the DTR/RTS lines never toggle —
+  otherwise every hook would reset the board (the reason serial was originally rejected)
 
 Merge the following into `hooks` in `~/.claude/settings.json` (`"async": true` on every event is required):
 
@@ -137,13 +152,15 @@ It auto-offs 30 minutes after the last event. Not a failure — any event wakes 
 **Q. It's purple right after boot**
 That's the WiFi-connecting indicator. If it stays purple, check that your SSID is 2.4 GHz.
 
-## HTTP API
+## Device API (HTTP and serial)
 
-| Endpoint | Description |
-| :--- | :--- |
-| `GET /led?s=<state>&sid=<id>&ts=<ms>` | Report state. `state` is idle/tool/wait/done/err; `sid` is a session ID (default: `default`). Updates older than the last applied `ts` are rejected (omit `ts` to always apply) |
-| `GET /rgb?r=&g=&b=` | Light an arbitrary color directly (for testing; returns to normal on the next `/led` or after 10 min) |
-| `GET /` | Aggregated state, session count/breakdown, uptime, RSSI |
+The same three commands are available over both transports. Serial commands are one line each at 115200 baud, terminated by a newline; the device answers with one line (`ok` / `stale` / `unknown state`), and `status` answers with the report followed by an empty line.
+
+| HTTP | Serial | Description |
+| :--- | :--- | :--- |
+| `GET /led?s=<state>&sid=<id>&ts=<ms>` | `led s=<state> sid=<id> ts=<ms>` | Report state. `state` is idle/tool/wait/done/err; `sid` is a session ID (default: `default`). Updates older than the last applied `ts` are rejected (omit `ts` to always apply) |
+| `GET /rgb?r=&g=&b=` | `rgb r= g= b=` | Light an arbitrary color directly (for testing; returns to normal on the next `led` or after 10 min) |
+| `GET /` | `status` | Aggregated state, session count/breakdown, uptime, RSSI, WiFi status (`off` / `connecting` / IP) |
 
 ## LED testing
 
@@ -169,16 +186,18 @@ For filming or a quick visual check, `led-demo.sh` plays the animations automati
 
 Tip: `led-test.sh rgb R G B` holds a fixed color for 10 minutes, which makes still photography much easier than chasing a blink.
 
-The device address comes from the `ATOM` environment variable or a gitignored `.atom-ip` file next to the script.
+The device address comes from the `ATOM` environment variable or a gitignored `.atom-ip` file next to the script — either an HTTP URL (`http://192.168.1.50`) or a serial port path (`/dev/cu.usbserial-XXXX`); the scripts pick the transport from the prefix.
 
 ## Troubleshooting
 
 | Symptom | Fix |
 | :--- | :--- |
-| LED stays purple | WiFi not connected. Make sure the SSID is 2.4 GHz (5 GHz unsupported) |
+| LED stays purple | WiFi not connected. Make sure the SSID is 2.4 GHz (5 GHz unsupported). Purple gives up after 20 s; over USB serial the first command ends it immediately |
+| Hooks don't reach the device over WiFi | Guest/corporate WiFi often blocks device-to-device traffic (client isolation). Switch to the USB serial transport |
+| Device reboots when a hook fires (USB) | Something opened the port without `-hupcl` (e.g. a serial monitor). Close it; led.sh's own writes don't toggle DTR/RTS |
 | Won't enter download mode | Hold the button while plugging in USB |
 | No red on permission prompts | Check `/hooks` shows PermissionRequest loaded |
-| Claude Code feels slow | Verify `async: true` on hooks and `-m 1` on curl |
+| Claude Code feels slow | Verify `async: true` on hooks (and `-m 1` on curl for the WiFi transport) |
 | `pio device monitor` fails | It needs a TTY and can't run in the background; use the pyserial recipe in docs/NOTES.md |
 
 ## Case

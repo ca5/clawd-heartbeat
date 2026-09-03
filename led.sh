@@ -6,12 +6,36 @@
 # - 拒否・中断は hook に流れないため、ダイアログ表示中だけトランスクリプトを
 #   監視して痕跡(拒否の tool_result / 中断メッセージ)を検知したら赤を解除する
 # - 手動実行(tty)時は stdin を読まず sid=default で送る
+# - 送信経路は USB シリアルか WiFi/HTTP のどちらか(下の設定で切り替え)
 
-# ↓ 自分の Atom Lite の固定 IP に書き換える
+# ↓ 送信経路の設定(どちらか一方)
+#   USB シリアル: Atom を Mac に USB 直結している場合。WiFi 不要で、社内 LAN 等で
+#                 HTTP が届かない環境向け。ポートは `ls /dev/cu.usbserial-*` で確認
+#   WiFi/HTTP   : ATOM_SERIAL を空にして、ATOM_URL に固定 IP を書く
+ATOM_SERIAL=""                       # 例: /dev/cu.usbserial-XXXXXXXXXX
 ATOM_URL="http://192.168.1.50"
 
 now_ms() { perl -MTime::HiRes=time -e 'printf("%.0f", time()*1000)' 2>/dev/null || echo 0; }
-send_state() { curl -s -m 1 --retry 2 --retry-all-errors "$ATOM_URL/led?s=$1&sid=${2:-default}&ts=$(now_ms)" >/dev/null 2>&1; }
+
+# シリアル送信。Atom Lite は DTR/RTS が EN/IO0 に配線されているため、ポートの open/close で
+# 信号が動くとボードがリセットされる(HANDOFF.md でシリアル案が不採用になった理由)。
+# 対策: close 時に信号を落とさない -hupcl を毎回セットし、信号を「常時アサート」で固定する。
+# tty.* はキャリア待ちで固まることがあるので cu.* を使う。応答は読まない(hook は投げて終わり)
+send_serial() {
+  [ -c "$ATOM_SERIAL" ] || return 1
+  {
+    stty raw -echo -hupcl clocal 115200 <&3 2>/dev/null
+    printf '%s\n' "$1" >&3
+  } 3<>"$ATOM_SERIAL" 2>/dev/null
+}
+
+send_state() {
+  if [ -n "$ATOM_SERIAL" ]; then
+    send_serial "led s=$1 sid=${2:-default} ts=$(now_ms)"
+  else
+    curl -s -m 1 --retry 2 --retry-all-errors "$ATOM_URL/led?s=$1&sid=${2:-default}&ts=$(now_ms)" >/dev/null 2>&1
+  fi
+}
 file_size() { stat -f%z "$1" 2>/dev/null || stat -c%s "$1" 2>/dev/null || echo 0; }
 
 # ダイアログ応答待ちの間、トランスクリプト(JSONL)の追記分を 1 秒間隔で監視する。
