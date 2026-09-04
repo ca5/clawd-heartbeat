@@ -406,7 +406,14 @@ void render() {
 
   switch (shown) {
     case IDLE:
-      c = CHSV(160, 255, 128);                         // 青(フルの 1/2。ケース越し視認用)
+      // BLE 有効かつ未接続(Mac の Bluetooth オフ / デーモン停止 / まだ繋がっていない)は、
+      // 青のゆっくり点滅で「リンク待ち」を示す。接続中は従来どおり青の常灯。
+      // 1 秒周期の点滅は wait(400ms)/done(150ms)/err(120ms)と速度で区別できる。
+      // 新しい状態が届いていれば必ず接続中なので、この区別が要るのは idle のときだけ
+      if (BLE_ENABLED && !bleConnected)
+        c = ((now / 1000) % 2) ? CRGB(CHSV(160, 255, 110)) : CRGB(CRGB::Black);   // 青のゆっくり点滅
+      else
+        c = CHSV(160, 255, 128);                       // 青の常灯(フルの 1/2。ケース越し視認用)
       break;
     case TOOL:
       c = CRGB::White;                                 // 白の呼吸(オレンジケース越しでも赤と混同しない)

@@ -37,6 +37,7 @@ Supplementary docs (currently in Japanese):
 | `err` | Red fast blink (120 ms) | StopFailure |
 | rainbow | Rainbow swirl for 10 s, then back to the current state | Pressing the front button (the LED face) |
 | off | Auto-off 30 min after the last request; any request wakes it | — |
+| idle, slow blue blink | Link down: BLE is enabled but the Mac isn't connected (Bluetooth off, daemon stopped, or not yet linked) | — |
 
 ![The heart cycling through idle, working, waiting for approval, and done](docs/img/demo.gif)
 
