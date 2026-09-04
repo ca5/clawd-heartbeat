@@ -59,6 +59,13 @@ PY
 ensure_ble_daemon() {
   local lock="$ATOM_BLE_SOCK.lock"
   [ -S "$ATOM_BLE_SOCK" ] && return 0
+  # ソケットが無いのにロックだけ残っている = 前回の起動が後片付けせず落ちた残骸。
+  # デーモンは起動後 3 秒ほどでソケットを作るので、ロックが 15 秒より古ければ掃除する
+  if [ -d "$lock" ]; then
+    local age
+    age=$(( $(date +%s) - $(stat -f %m "$lock" 2>/dev/null || stat -c %Y "$lock" 2>/dev/null || echo 0) ))
+    [ "$age" -gt 15 ] && rmdir "$lock" 2>/dev/null
+  fi
   local cmd="$ATOM_BLE_CMD"
   if [ -z "$cmd" ]; then
     if command -v uv >/dev/null 2>&1; then cmd="uv run --script"; else cmd="$ATOM_BLE_PYTHON"; fi
