@@ -33,6 +33,7 @@ description: >
 | :--- | :--- | :--- |
 | WiFi/HTTP | 自宅など、Mac と Atom を同じ LAN に置ける。Atom を USB 電源だけで好きな場所に置きたい | 2.4GHz の SSID/パスワード、ルーターの DHCP 予約 |
 | USB シリアル | 来客用 WiFi(端末間通信の遮断)、802.1X の社内 WiFi、DHCP 予約不可など、Mac から Atom に HTTP が届かない | Atom を Mac に USB 直結しておくこと |
+| BLE(ブランチ `bluetooth-spp`)| WiFi が使えず、かつ Atom を無線(USB 電源のみ)にしたい | uv(または `pip install bleak`)、初回の macOS Bluetooth 許可、常駐デーモン ble-bridge.py |
 
 会社・共有オフィスなら最初から USB シリアルを勧める(WiFi で試してから ARP 未解決で気づくと時間を無駄にする)。
 
@@ -57,6 +58,14 @@ pio run -t upload
 USB シリアルだけで使うなら紫は無視してよい。
 
 ## 3. 宛先の確認
+
+### 3c. BLE の場合(ブランチ `bluetooth-spp`)
+
+1. `BLE_ENABLED = true` のファームウェアを書き込む(`main` は WiFi + USB のみ)
+2. `uv run ble-bridge.py --scan` で Atom(`<== clawd?` 付き)が見えるか確認。見えなければ広告分割か Bluetooth 許可を疑う
+3. `uv run ble-bridge.py` で常駐起動 → 初回の許可ダイアログを許可 → ログに `connected`
+4. **検証**(ユーザー実行): `ATOM=ble ./led-test.sh status` が `ble=connected` を返し、`ATOM=ble ./led-test.sh send tool default` が 1 秒未満で返ること
+5. hook は `~/.claude/led.sh` の `ATOM_BLE="1"`(`ATOM_SERIAL` は空)。led.sh が `uv run --script` でデーモンを自動起動する
 
 ### 3a. USB シリアルの場合
 

@@ -12,11 +12,13 @@ Put it inside a 3D-printed Clawd figure with a dead-front heart window, and you 
 
 ```
 Claude Code hooks ──HTTP GET (WiFi)──────┐
-                                         ├──> M5Atom Lite ──> FastLED ──> SK6812
-Claude Code hooks ──line command (USB)───┘
+                    line command (USB)───┼──> M5Atom Lite ──> FastLED ──> SK6812
+                    line command (BLE)───┘
 ```
 
-Two transports, same protocol: over WiFi the hook sends an HTTP GET; over USB it writes one line to the serial port. Pick WiFi when the Atom can sit anywhere on your desk with just a USB power source; pick USB serial when the Atom and the Mac can't share a network (office guest WiFi with client isolation, corporate 802.1X, no DHCP reservations).
+Three transports, same one-line protocol. **WiFi**: the hook sends an HTTP GET — pick it when the Atom can share a network with the Mac. **USB serial**: the hook writes a line to the serial port — pick it when they can't share a network (guest WiFi with client isolation, corporate 802.1X, no DHCP reservations) and the Atom is plugged into the Mac. **BLE**: a small resident daemon on the Mac holds a Bluetooth Low Energy connection and forwards the lines — pick it to keep the Atom wireless (USB power only) where WiFi won't work. BLE lives on the `bluetooth-spp` branch; `main` ships WiFi + USB serial.
+
+Why not Bluetooth Classic (SPP)? macOS drops an idle SPP serial link even with the port held open and needs ~2 s to reconnect on every send, so it can't back a status light. BLE keeps the connection open, so sends land in tens of milliseconds. See docs/NOTES.md.
 
 Supplementary docs (currently in Japanese):
 
@@ -35,6 +37,7 @@ Supplementary docs (currently in Japanese):
 | `err` | Red fast blink (120 ms) | StopFailure |
 | rainbow | Rainbow swirl for 10 s, then back to the current state | Pressing the front button (the LED face) |
 | off | Auto-off 30 min after the last request; any request wakes it | — |
+| idle, slow blue blink | Link down: BLE is enabled but the Mac isn't connected (Bluetooth off, daemon stopped, or not yet linked) | — |
 
 ![The heart cycling through idle, working, waiting for approval, and done](docs/img/demo.gif)
 
@@ -87,6 +90,24 @@ echo /dev/cu.usbserial-XXXXXXXX > .atom-ip   # gitignored; led-test.sh / led-dem
 ```
 
 WiFi is optional: with an empty SSID the firmware skips WiFi entirely (no purple boot phase). With an SSID set, both transports work at once and a WiFi outage no longer reboots the device.
+
+**BLE transport** (branch `bluetooth-spp`): the firmware advertises as a BLE peripheral, and a resident Mac-side daemon holds the connection and forwards command lines. It needs [uv](https://docs.astral.sh/uv/) (or `pip install bleak`) and, on first run, macOS Bluetooth permission.
+
+```bash
+uv run ble-bridge.py            # scans, connects, holds the link; grant the Bluetooth prompt once
+ATOM=ble ./led-test.sh status   # should print state=... ble=connected
+```
+
+Point the hook at BLE by setting `ATOM_BLE="1"` at the top of `~/.claude/led.sh` (leave `ATOM_SERIAL` empty). Add `led.sh ensure-ble` to the SessionStart hook so the daemon (and its BLE connection) is up before the first event; led.sh also autostarts it on demand via `uv run --script` as a fallback:
+
+```json
+"SessionStart": [{ "hooks": [
+  { "type": "command", "command": "$HOME/.claude/led.sh ensure-ble", "async": true },
+  { "type": "command", "command": "$HOME/.claude/led.sh idle", "async": true }
+] }]
+```
+
+Requires the 3 MB app partition, already set in `platformio.ini`.
 
 `platform = espressif32@6.9.0` is pinned on purpose — do not bump it casually (see docs/NOTES.md).
 
@@ -193,7 +214,8 @@ The device address comes from the `ATOM` environment variable or a gitignored `.
 | Symptom | Fix |
 | :--- | :--- |
 | LED stays purple | WiFi not connected. Make sure the SSID is 2.4 GHz (5 GHz unsupported). Purple gives up after 20 s; over USB serial the first command ends it immediately |
-| Hooks don't reach the device over WiFi | Guest/corporate WiFi often blocks device-to-device traffic (client isolation). Switch to the USB serial transport |
+| Hooks don't reach the device over WiFi | Guest/corporate WiFi often blocks device-to-device traffic (client isolation). Switch to the USB serial or BLE transport |
+| BLE device not found when scanning | Make sure the firmware splits advertising (UUID in adv, name in scan response) and that macOS granted Bluetooth permission to the terminal/uv. `uv run ble-bridge.py --scan` lists what's visible |
 | Device reboots when a hook fires (USB) | Something opened the port without `-hupcl` (e.g. a serial monitor). Close it; led.sh's own writes don't toggle DTR/RTS |
 | Won't enter download mode | Hold the button while plugging in USB |
 | No red on permission prompts | Check `/hooks` shows PermissionRequest loaded |

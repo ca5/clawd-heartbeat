@@ -17,7 +17,7 @@
 set -eu
 
 # 宛先の決定: 環境変数 ATOM > .atom-ip ファイル(gitignore 済み) > プレースホルダ
-# 値が /dev/ で始まれば USB シリアル(例: /dev/cu.usbserial-XXXX)、それ以外は HTTP の URL
+# 値が ble(または ble:<socket>)なら BLE、/dev/ で始まれば USB シリアル、それ以外は HTTP の URL
 here=$(cd "$(dirname "$0")" && pwd)
 if [ -z "${ATOM:-}" ] && [ -f "$here/.atom-ip" ]; then
   ATOM=$(cat "$here/.atom-ip")
@@ -30,17 +30,37 @@ ATOM="${ATOM:-http://192.168.1.50}"
 # シリアルは open/close で DTR/RTS が動くとボードがリセットされるため -hupcl を毎回セットする
 # (led.sh と同じ対策)。応答は "state=" 行が来るまでのノイズ(古い ok 等)を読み飛ばす
 atom_send() {
-  local cmd="$1" path rest line started=0
+  local cmd="$1" path rest line started=0 sock
   set -- $cmd
   path="$1"; shift
   case "$ATOM" in
+    ble|ble:*)
+      # BLE ブリッジのソケットへ 1 行送り、応答を受ける。ソケットのパスは ble:<path> で指定可(既定あり)
+      sock="${ATOM#ble:}"; [ "$sock" = ble ] && sock="${TMPDIR:-/tmp}/claude-led-ble.sock"
+      [ -S "$sock" ] || { echo "BLE ブリッジが起動していません($sock)。led.sh 経由か ble-bridge.py を起動してください" >&2; return 1; }
+      if command -v nc >/dev/null 2>&1; then
+        printf '%s\n' "$cmd" | nc -U -w 3 "$sock"
+      else
+        python3 - "$sock" "$cmd" <<'PY'
+import socket, sys
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.settimeout(3)
+s.connect(sys.argv[1]); s.sendall((sys.argv[2] + "\n").encode())
+import sys as _s
+while True:
+    d = s.recv(512)
+    if not d: break
+    _s.stdout.write(d.decode(errors="replace"))
+s.close()
+PY
+      fi
+      ;;
     /dev/*)
       [ -c "$ATOM" ] || { echo "シリアルポートが見つかりません: $ATOM" >&2; return 1; }
       {
         stty raw -echo -hupcl clocal 115200 <&3 2>/dev/null
         printf '%s\n' "$cmd" >&3
         if [ "$path" = status ]; then
-          while IFS= read -r -t 2 line <&3; do
+          while IFS= read -r -t 3 line <&3; do
             line=${line%$'\r'}
             case "$line" in state=*) started=1 ;; esac
             [ "$started" -eq 1 ] || continue
@@ -48,7 +68,7 @@ atom_send() {
             printf '%s\n' "$line"
           done
         else
-          { IFS= read -r -t 1 line <&3 && printf '%s\n' "${line%$'\r'}"; } || true   # 応答なしでも失敗にしない(set -e 対策)
+          { IFS= read -r -t 3 line <&3 && printf '%s\n' "${line%$'\r'}"; } || true   # 応答なしでも失敗にしない(set -e 対策)。Bluetooth は接続に約 1.5 秒かかる
         fi
       } 3<>"$ATOM" 2>/dev/null
       ;;
@@ -59,6 +79,18 @@ atom_send() {
       ;;
   esac
 }
+
+# シリアル(特に Bluetooth)は open のたびに接続し直すので、再生中はポートを開いたまま接続を維持する。
+# fd 9 を掴んでおくだけ。atom_send 内の fd 3 とは独立
+case "$ATOM" in
+  /dev/*)
+    if [ -c "$ATOM" ]; then
+      exec 9<>"$ATOM"
+      stty -hupcl <&9 2>/dev/null || true
+      sleep 2   # Bluetooth の接続確立(約 1.5 秒)を待つ
+    fi
+    ;;
+esac
 
 mode="states"
 loop=0

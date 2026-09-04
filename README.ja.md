@@ -11,13 +11,19 @@ M5Atom Lite の LED 1 粒で Claude Code の実行状態を表示するステー
 
 ```
 Claude Code hooks ──HTTP GET(WiFi)──────┐
-                                         ├──> M5Atom Lite ──> FastLED ──> SK6812
-Claude Code hooks ──行コマンド(USB)─────┘
+                    行コマンド(USB)─────┼──> M5Atom Lite ──> FastLED ──> SK6812
+                    行コマンド(BLE)─────┘
 ```
 
-送信経路は 2 つ、プロトコルは共通。WiFi なら hook が HTTP GET を投げ、USB ならシリアルポートに 1 行書く。
-USB 電源さえあれば机のどこにでも置ける WiFi が基本だが、Atom と Mac が同じネットワークに
-いられない環境(端末間通信を遮断する来客用 WiFi、802.1X の社内 WiFi、DHCP 予約不可)では USB シリアルを使う。
+送信経路は 3 つ、1 行プロトコルは共通。**WiFi**: hook が HTTP GET を投げる。Atom と Mac が同じネットワークに
+いられるとき向け。**USB シリアル**: hook がシリアルポートに 1 行書く。同じネットワークにいられず
+(端末間通信を遮断する来客用 WiFi、802.1X の社内 WiFi、DHCP 予約不可)、Atom を Mac に USB 直結できるとき向け。
+**BLE**: Mac 側の常駐デーモンが BLE 接続を保持して 1 行を中継する。WiFi が使えない環境で Atom を
+無線(USB 電源のみ)にしたいとき向け。BLE はブランチ `bluetooth-spp` にあり、`main` は WiFi + USB シリアル。
+
+Bluetooth Classic(SPP)を使わない理由: macOS はポートを開いたままでも idle で SPP のリンクを切り、
+送信ごとに約 2 秒の再接続待ちが入るため、ステータス表示には使えない。BLE は接続を保持できるので
+送信は数十ミリ秒で届く(docs/NOTES.md 参照)。
 
 設計の経緯・不採用案(シリアル直叩きがリセットを起こす理由。USB 経路はこれを回避している、NOTES.md 参照)は [`HANDOFF.md`](docs/HANDOFF.md)、
 構築後の運用情報・設計判断ログは [`NOTES.md`](docs/NOTES.md)、
@@ -35,6 +41,7 @@ USB 電源さえあれば机のどこにでも置ける WiFi が基本だが、A
 | `err` | 赤の 120ms 高速点滅 | StopFailure |
 | レインボー | 10 秒間の虹色スワール、終了後は元の状態表示に戻る | 前面ボタン(LED 面)の押下 |
 | 消灯 | 最後のリクエストから 30 分で自動消灯、次のリクエストで復帰 | — |
+| idle・青のゆっくり点滅 | リンク断: BLE 有効なのに Mac と未接続(Bluetooth オフ / デーモン停止 / 未接続)| — |
 
 ![待機・作業中・承認待ち・完了のサイクル](docs/img/demo.gif)
 
@@ -89,6 +96,24 @@ echo /dev/cu.usbserial-XXXXXXXX > .atom-ip   # gitignore 済み。led-test.sh / 
 ```
 
 WiFi は任意。SSID を空にすると WiFi を一切使わず(起動時の紫も出ない)、SSID があれば両経路が同時に使える。WiFi が切れてもデバイスは再起動しなくなった。
+
+**BLE 経路**(ブランチ `bluetooth-spp`): ファームウェアが BLE ペリフェラルとして広告し、Mac 側の常駐デーモンが接続を保持してコマンドを中継する。[uv](https://docs.astral.sh/uv/)(または `pip install bleak`)と、初回の macOS Bluetooth 使用許可が要る。
+
+```bash
+uv run ble-bridge.py            # スキャン→接続→保持。初回の許可ダイアログは許可する
+ATOM=ble ./led-test.sh status   # state=... ble=connected が出れば OK
+```
+
+hook を BLE にするには `~/.claude/led.sh` 冒頭の `ATOM_BLE="1"`(`ATOM_SERIAL` は空のまま)。SessionStart hook に `led.sh ensure-ble` を足すと、最初のイベントより前にデーモン(と BLE 接続)が立ち上がる。led.sh は必要時に `uv run --script` で自動起動もする(フォールバック):
+
+```json
+"SessionStart": [{ "hooks": [
+  { "type": "command", "command": "$HOME/.claude/led.sh ensure-ble", "async": true },
+  { "type": "command", "command": "$HOME/.claude/led.sh idle", "async": true }
+] }]
+```
+
+3MB のアプリ領域が前提(`platformio.ini` で設定済み)。
 
 `platform = espressif32@6.9.0` は意図的なバージョン固定。勝手に上げないこと(docs/NOTES.md 参照)。
 
@@ -200,7 +225,8 @@ WiFi 接続中の表示です。点きっぱなしの場合は 2.4GHz の SSID �
 | 症状 | 対処 |
 | :--- | :--- |
 | LED が紫のまま | WiFi 未接続。2.4GHz の SSID か確認(5GHz 不可)。紫は 20 秒で諦めて青になる。USB なら最初のコマンドで即終わる |
-| WiFi で hook がデバイスに届かない | 来客用・社内 WiFi は端末間通信を遮断していることが多い(クライアント分離)。USB シリアル経路に切り替える |
+| WiFi で hook がデバイスに届かない | 来客用・社内 WiFi は端末間通信を遮断していることが多い(クライアント分離)。USB シリアルか BLE 経路に切り替える |
+| BLE でデバイスが見つからない | 広告を分割(UUID を広告、名前をスキャン応答)しているか、macOS が Bluetooth 使用を許可しているか確認。`uv run ble-bridge.py --scan` で見えているデバイスを一覧できる |
 | hook のたびにデバイスが再起動する(USB) | `-hupcl` なしでポートを開く何か(シリアルモニタ等)が動いている。閉じる。led.sh 自身の送信では DTR/RTS は動かない |
 | 書き込みモードに入らない | ボタンを押しながら USB を挿す |
 | 承認待ちなのに赤くならない | `/hooks` で PermissionRequest の読み込みを確認 |
