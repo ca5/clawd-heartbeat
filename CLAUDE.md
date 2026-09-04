@@ -16,6 +16,7 @@ A physical Claude Code status indicator: M5Atom Lite firmware (PlatformIO/C++) +
 - `ble-bridge.py` — Mac-side BLE daemon (bleak, uv/PEP723). Holds the BLE connection, exposes a Unix socket, forwards command lines to the RX characteristic. `pyproject.toml` + `uv.lock` make `uv run ble-bridge.py` self-contained
 - `led-test.sh` — manual testing (`status` / `states` / `rgb` / `ramp` / `coupon`); device address from `ATOM` env or gitignored `.atom-ip` — `ble` (or `ble:<sock>`) means BLE, `/dev/...` means serial, anything else is an HTTP URL
 - `led-demo.sh` — non-interactive animation playback for filming/verification (`states` / `story` / `wait-full`, `--solo` to stop other sessions overriding it)
+- `atom-antigravity.sh` + `antigravity-hooks.json` — Google Antigravity adapter: maps its hooks (PreToolUse `run_command`→wait via `{"decision":"ask"}`, invocations→tool, Stop→done) to LED states over the shared BLE daemon; sid `ag:<conversationId>`. See `docs/ANTIGRAVITY.md`
 - `docs/NOTES.md` — design decisions + empirically measured hook behavior (Japanese)
 - `docs/LIFECYCLE.md` — event→LED mapping and hook blind spots (Japanese)
 

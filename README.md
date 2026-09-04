@@ -25,6 +25,7 @@ Supplementary docs (currently in Japanese):
 - [`LIFECYCLE.md`](docs/LIFECYCLE.md) — how Claude Code's hook events map to LED states, including the blind spots (why the LED stays red after you hit Yes, etc.)
 - [`NOTES.md`](docs/NOTES.md) — design decision log and empirically measured hook behavior that the official docs don't cover
 - [`HANDOFF.md`](docs/HANDOFF.md) — original design rationale and rejected alternatives (including why naive serial resets the Atom Lite — the USB transport works around that, see NOTES.md)
+- [`ANTIGRAVITY.md`](docs/ANTIGRAVITY.md) — drive the same LED from Google Antigravity's hooks (shares the BLE daemon; can show the approval-wait red)
 
 ## LED states
 
