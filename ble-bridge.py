@@ -59,6 +59,7 @@ class Bridge:
         self.client = None
         self.lock = asyncio.Lock()          # BLE 操作を直列化(同時 write の衝突回避)
         self.last_tx = ""                    # 直近に notify で受けた TX(status の即応用)
+        self.last_error = ""                 # 直近の接続失敗理由(呼び手に返す)
 
     def _on_tx(self, _handle, data: bytearray):
         self.last_tx = data.decode(errors="replace")
@@ -69,26 +70,31 @@ class Bridge:
         # アドレス未指定ならスキャンして探す。macOS は広告に名前を載せないことがあるので、
         # まずサービス UUID で照合し、見つからなければ名前でフォールバックする
         addr = self.address
-        if not addr:
-            dev = await BleakScanner.find_device_by_filter(
-                lambda d, adv: SERVICE_UUID.lower() in [u.lower() for u in adv.service_uuids],
-                timeout=12.0)
-            if not dev:
-                dev = await BleakScanner.find_device_by_name(self.name, timeout=8.0)
-            if not dev:
-                log(f"device not found (service {SERVICE_UUID[:8]}… / name '{self.name}')")
-                return False
-            addr = dev
         try:
+            if not addr:
+                dev = await BleakScanner.find_device_by_filter(
+                    lambda d, adv: SERVICE_UUID.lower() in [u.lower() for u in adv.service_uuids],
+                    timeout=12.0)
+                if not dev:
+                    dev = await BleakScanner.find_device_by_name(self.name, timeout=8.0)
+                if not dev:
+                    self.last_error = "device not found"
+                    log(f"device not found (service {SERVICE_UUID[:8]}… / name '{self.name}')")
+                    return False
+                addr = dev
             self.client = BleakClient(addr, disconnected_callback=lambda _c: log("disconnected"))
             await self.client.connect()
             try:
                 await self.client.start_notify(TX_UUID, self._on_tx)
             except Exception:
                 pass  # notify が張れなくても read で status は取れる
+            self.last_error = ""
             log("connected")
             return True
         except Exception as e:
+            # スキャン/接続で出る例外(Bluetooth オフ = POWERED_OFF など)は握って理由を残す。
+            # ここで raise させるとブリッジのタスクが落ちる
+            self.last_error = str(e)
             log(f"connect failed: {e}")
             self.client = None
             return False
@@ -96,7 +102,7 @@ class Bridge:
     async def send_line(self, line: str) -> str:
         async with self.lock:
             if not await self.ensure_connected():
-                return "error: not connected\n"
+                return f"error: {self.last_error or 'not connected'}\n"
             try:
                 if line.strip() == "status":
                     # RX に status を投げ、TX(read)で最新を取る
@@ -129,6 +135,11 @@ async def handle_client(reader, writer, bridge: Bridge):
             await writer.drain()
     except Exception as e:
         log(f"client error: {e}")
+        try:
+            writer.write(f"error: {e}\n".encode())  # 呼び手が理由を見られるように返す
+            await writer.drain()
+        except Exception:
+            pass
     finally:
         writer.close()
 
