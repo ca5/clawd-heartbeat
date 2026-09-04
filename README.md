@@ -97,7 +97,16 @@ uv run ble-bridge.py            # scans, connects, holds the link; grant the Blu
 ATOM=ble ./led-test.sh status   # should print state=... ble=connected
 ```
 
-Point the hook at BLE by setting `ATOM_BLE="1"` at the top of `~/.claude/led.sh` (leave `ATOM_SERIAL` empty). led.sh autostarts the daemon on the first event via `uv run --script`. Requires the 3 MB app partition, already set in `platformio.ini`.
+Point the hook at BLE by setting `ATOM_BLE="1"` at the top of `~/.claude/led.sh` (leave `ATOM_SERIAL` empty). Add `led.sh ensure-ble` to the SessionStart hook so the daemon (and its BLE connection) is up before the first event; led.sh also autostarts it on demand via `uv run --script` as a fallback:
+
+```json
+"SessionStart": [{ "hooks": [
+  { "type": "command", "command": "$HOME/.claude/led.sh ensure-ble", "async": true },
+  { "type": "command", "command": "$HOME/.claude/led.sh idle", "async": true }
+] }]
+```
+
+Requires the 3 MB app partition, already set in `platformio.ini`.
 
 `platform = espressif32@6.9.0` is pinned on purpose — do not bump it casually (see docs/NOTES.md).
 

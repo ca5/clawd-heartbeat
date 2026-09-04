@@ -120,6 +120,15 @@ watch_dialog() {
 }
 
 state="$1"
+
+# SessionStart hook 用: BLE デーモンだけを先に起こす(状態は送らない)。
+# 最初の実イベントより前に接続を確立させ、1 個目の取りこぼしを無くす。
+# ATOM_BLE を使っていなければ何もしない。多重起動はソケットロックで防ぐ
+if [ "$state" = "ensure-ble" ]; then
+  [ -n "$ATOM_BLE" ] && ensure_ble_daemon
+  exit 0
+fi
+
 sid=""
 if [ ! -t 0 ]; then
   input=$(cat)

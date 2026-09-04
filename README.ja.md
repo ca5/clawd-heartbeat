@@ -103,7 +103,16 @@ uv run ble-bridge.py            # スキャン→接続→保持。初回の許�
 ATOM=ble ./led-test.sh status   # state=... ble=connected が出れば OK
 ```
 
-hook を BLE にするには `~/.claude/led.sh` 冒頭の `ATOM_BLE="1"`(`ATOM_SERIAL` は空のまま)。led.sh が最初のイベントで `uv run --script` によりデーモンを自動起動する。3MB のアプリ領域が前提(`platformio.ini` で設定済み)。
+hook を BLE にするには `~/.claude/led.sh` 冒頭の `ATOM_BLE="1"`(`ATOM_SERIAL` は空のまま)。SessionStart hook に `led.sh ensure-ble` を足すと、最初のイベントより前にデーモン(と BLE 接続)が立ち上がる。led.sh は必要時に `uv run --script` で自動起動もする(フォールバック):
+
+```json
+"SessionStart": [{ "hooks": [
+  { "type": "command", "command": "$HOME/.claude/led.sh ensure-ble", "async": true },
+  { "type": "command", "command": "$HOME/.claude/led.sh idle", "async": true }
+] }]
+```
+
+3MB のアプリ領域が前提(`platformio.ini` で設定済み)。
 
 `platform = espressif32@6.9.0` は意図的なバージョン固定。勝手に上げないこと(docs/NOTES.md 参照)。
 
