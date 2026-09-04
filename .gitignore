@@ -7,3 +7,5 @@ docs/makerworld-listing.md
 docs/thumbnail-prompt.md
 docs/promo-drafts.md
 docs/zenn-article.md
+.venv/
+__pycache__/

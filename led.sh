@@ -6,20 +6,72 @@
 # - 拒否・中断は hook に流れないため、ダイアログ表示中だけトランスクリプトを
 #   監視して痕跡(拒否の tool_result / 中断メッセージ)を検知したら赤を解除する
 # - 手動実行(tty)時は stdin を読まず sid=default で送る
-# - 送信経路は USB シリアルか WiFi/HTTP のどちらか(下の設定で切り替え)
+# - 送信経路は BLE / USB シリアル / WiFi(HTTP)のいずれか(下の設定で選ぶ。上から優先)
 
-# ↓ 送信経路の設定(どちらか一方)
-#   USB シリアル: Atom を Mac に USB 直結している場合。WiFi 不要で、社内 LAN 等で
-#                 HTTP が届かない環境向け。ポートは `ls /dev/cu.usbserial-*` で確認
-#   WiFi/HTTP   : ATOM_SERIAL を空にして、ATOM_URL に固定 IP を書く
+# ↓ 送信経路の設定
+#   BLE       : ATOM_BLE=1。Mac 側の常駐デーモン(ble-bridge.py)が接続を保持し、hook は
+#               Unix ソケットに 1 行書くだけ。Atom は USB 電源だけで離れた場所に置ける。
+#               事前に `pip install bleak` と、初回のみ Bluetooth 使用許可(macOS のダイアログ)が要る
+#   USB シリアル: ATOM_BLE を空にして ATOM_SERIAL にポート(`ls /dev/cu.usbserial-*`)
+#   WiFi/HTTP : ATOM_BLE と ATOM_SERIAL を空にして ATOM_URL に固定 IP
+ATOM_BLE=""                          # "1" で BLE を使う
 ATOM_SERIAL=""                       # 例: /dev/cu.usbserial-XXXXXXXXXX
 ATOM_URL="http://192.168.1.50"
 
+# BLE ブリッジの設定(ATOM_BLE=1 のときだけ使う)
+ATOM_BLE_SOCK="${TMPDIR:-/tmp}/claude-led-ble.sock"   # デーモンが待ち受ける Unix ソケット
+ATOM_BLE_DIR="$HOME/.claude"         # ble-bridge.py の置き場所(led.sh と同じ場所を想定)
+# デーモンの起動コマンド。空なら uv があれば "uv run --script"、無ければ "python3" で起動する。
+# uv 起動なら bleak は PEP 723 のインラインメタデータから自動で用意される
+ATOM_BLE_CMD=""
+ATOM_BLE_PYTHON="python3"            # ソケット送信のフォールバック(bleak 不要・標準ライブラリのみ)
+
 now_ms() { perl -MTime::HiRes=time -e 'printf("%.0f", time()*1000)' 2>/dev/null || echo 0; }
 
-# シリアル送信。Atom Lite は DTR/RTS が EN/IO0 に配線されているため、ポートの open/close で
-# 信号が動くとボードがリセットされる(HANDOFF.md でシリアル案が不採用になった理由)。
-# 対策: close 時に信号を落とさない -hupcl を毎回セットし、信号を「常時アサート」で固定する。
+# BLE: 1 行を常駐デーモンのソケットへ送る。デーモンが居なければ起こしてから送る。
+# デーモンは BLE 接続を張りっぱなしにするので、送信ごとの再接続待ちが無い(応答は読まない)。
+send_ble() {
+  ble_write "$1" && return 0
+  ensure_ble_daemon
+  local i
+  for i in 1 2 3 4 5 6 7 8; do
+    ble_write "$1" && return 0
+    sleep 0.5
+  done
+  return 1
+}
+
+# ソケットへ 1 行送る。nc -U が無ければ python でフォールバック。接続できなければ非 0
+ble_write() {
+  [ -S "$ATOM_BLE_SOCK" ] || return 1
+  if command -v nc >/dev/null 2>&1; then
+    printf '%s\n' "$1" | nc -U -w 2 "$ATOM_BLE_SOCK" >/dev/null 2>&1
+  else
+    "$ATOM_BLE_PYTHON" - "$ATOM_BLE_SOCK" "$1" <<'PY' >/dev/null 2>&1
+import socket, sys
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.settimeout(2)
+s.connect(sys.argv[1]); s.sendall((sys.argv[2] + "\n").encode()); s.recv(256); s.close()
+PY
+  fi
+}
+
+# デーモンが居なければ起動(二重起動は mkdir ロックで防ぐ)。接続確立まで少し待つ
+ensure_ble_daemon() {
+  local lock="$ATOM_BLE_SOCK.lock"
+  [ -S "$ATOM_BLE_SOCK" ] && return 0
+  local cmd="$ATOM_BLE_CMD"
+  if [ -z "$cmd" ]; then
+    if command -v uv >/dev/null 2>&1; then cmd="uv run --script"; else cmd="$ATOM_BLE_PYTHON"; fi
+  fi
+  if mkdir "$lock" 2>/dev/null; then
+    ( $cmd "$ATOM_BLE_DIR/ble-bridge.py" --socket "$ATOM_BLE_SOCK" \
+        </dev/null >>"${TMPDIR:-/tmp}/claude-led-ble.log" 2>&1 ; rmdir "$lock" 2>/dev/null ) &
+    sleep 3   # スキャン + 接続の確立を待つ(初回だけ)
+  fi
+}
+
+# USB シリアル送信。Atom Lite は DTR/RTS が EN/IO0 に配線されており、ポートの open/close で
+# 信号が動くとボードがリセットされる。対策として -hupcl を毎回セットして信号を固定する。
 # tty.* はキャリア待ちで固まることがあるので cu.* を使う。応答は読まない(hook は投げて終わり)
 send_serial() {
   [ -c "$ATOM_SERIAL" ] || return 1
@@ -30,7 +82,9 @@ send_serial() {
 }
 
 send_state() {
-  if [ -n "$ATOM_SERIAL" ]; then
+  if [ -n "$ATOM_BLE" ]; then
+    send_ble "led s=$1 sid=${2:-default} ts=$(now_ms)"
+  elif [ -n "$ATOM_SERIAL" ]; then
     send_serial "led s=$1 sid=${2:-default} ts=$(now_ms)"
   else
     curl -s -m 1 --retry 2 --retry-all-errors "$ATOM_URL/led?s=$1&sid=${2:-default}&ts=$(now_ms)" >/dev/null 2>&1

@@ -197,6 +197,38 @@ WiFi を任意に: SSID が空なら `WIFI_OFF` でシリアル専用。SSID が
 セットアップ時の落とし穴: Claude Code の Bash サンドボックスからは `/dev/cu.*` を開けず、
 `~/.platformio` にも書けない。書き込みとシリアル確認はユーザーに `!` プレフィックスで実行してもらう。
 
+### BLE 経路の追加、Bluetooth Classic SPP は不採用(2026-09-04)
+
+USB が届く範囲に縛られない無線経路が欲しくなり、まず Bluetooth Classic SPP を試したが**不採用**。
+macOS は SPP の RFCOMM リンクを、ポートを開いたままでも idle で切る。開くたびに約 2 秒の再接続待ちが入り、
+接続前に閉じたデータは消える。ポートを保持する中継プロセスも、macOS が「開いているのに未接続」で固まらせるため
+成立しなかった(実測を repo 履歴とデーモンの試作に残した)。
+
+代わりに **BLE** を採用(ブランチ `bluetooth-spp`)。ファームウェアは BLE ペリフェラル
+(Nordic UART 互換 UUID `6e400001-…`、RX=write / TX=read+notify)。Mac 側は常駐デーモン
+`ble-bridge.py`(bleak)が BLE 接続を張りっぱなしにし、Unix ソケットで受けた 1 行を RX へ write する。
+BLE はアイドルでも接続を維持できるので、送信は実測 40ms 前後(SPP の 2 秒に対して)。
+
+踏んだ罠:
+- **広告 31 バイト上限**: 128bit UUID(18B)と名前(17B)を両方メイン広告に載せると溢れ、広告設定ごと
+  失敗して macOS から一切見えなくなる。UUID をメイン広告(`setAdvertisementData`)、名前をスキャン応答
+  (`setScanResponseData`)に分けると両方見える。`--scan` で確認できるようにした
+- **名前検索は不安定**: macOS は広告に名前を載せないことがあるので、デーモンはサービス UUID で照合し、
+  名前はフォールバック
+- **WiFi 共存**: `WiFi.setSleep(true)` が必須(false のままだと無線コントローラ有効化で abort し起動ループ)。
+  WiFi 未接続時のスキャン連打も BLE の広告を痩せさせるので、自動再接続を切って間欠試行にした(SPP 時と同じ対策)
+- **書き込みは BLE タスクで走る**ため、受信は SPSC リングに積んで実処理は loop() でやる(sessions[]/FastLED を
+  1 スレッドに寄せる)。応答は TX 特性に載せ、status は read で取れる(1 秒ごとに TX を更新)
+
+led.sh は `ATOM_BLE=1` でこの経路を選び、`uv run --script ble-bridge.py` でデーモンを自動起動する
+(初回のみ macOS の Bluetooth 使用許可が要る)。デバイス再起動時はデーモンの keepalive が 5 秒間隔で張り直す。
+
+### プロジェクトの uv 化(2026-09-04)
+
+Python は `ble-bridge.py` の bleak 依存だけ。`pyproject.toml` + `uv.lock` を置き、スクリプト冒頭に
+PEP 723 のインラインメタデータ(`dependencies = ["bleak>=0.22"]`)を書いた。`uv run ble-bridge.py` で
+bleak(+ macOS では pyobjc)が自動で用意される。`pip install` 不要。`.venv/` と `__pycache__/` は gitignore 済み。
+
 ### 自動消灯(2026-08-06)
 
 最後の HTTP リクエストから 30 分(`OFF_MS`)で完全消灯、次のリクエストで復帰。

@@ -1,0 +1,14 @@
+[project]
+name = "clawd-heartbeat"
+version = "0.1.0"
+description = "BLE bridge daemon for the Clawd Heartbeat LED status indicator (Mac side)"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "bleak>=0.22",
+]
+
+# ble-bridge.py が唯一の Python。uv run ble-bridge.py で bleak 込みで起動できる。
+# パッケージ化はしない(単一スクリプトのため)
+[tool.uv]
+package = false
