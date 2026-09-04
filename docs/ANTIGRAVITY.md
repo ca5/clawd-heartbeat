@@ -45,24 +45,26 @@ Antigravity のフックには権限・承認専用のイベントが無い。�
 前提: BLE 経路が動いていること(`ble-bridge.py` と `~/.claude/ble-bridge.py`、[README](../README.md) の
 BLE 節参照)。Claude Code を BLE で使っていれば、デーモンはそのまま共有される。
 
-1. アダプタを配置する。
+1. アダプタとフック設定を Antigravity の設定ディレクトリに置く(アダプタは Antigravity のものなので
+   Antigravity 側に置く。共有デーモン `ble-bridge.py` は Claude Code の setup が置いた `~/.claude` を
+   そのまま使う)。
 
    ```bash
-   cp atom-antigravity.sh ~/.claude/atom-antigravity.sh && chmod +x ~/.claude/atom-antigravity.sh
+   mkdir -p ~/.gemini/config
+   cp atom-antigravity.sh ~/.gemini/config/atom-antigravity.sh && chmod +x ~/.gemini/config/atom-antigravity.sh
+   cp antigravity-hooks.json ~/.gemini/config/hooks.json
    ```
 
-2. フックを設定する。[`antigravity-hooks.json`](../antigravity-hooks.json) を Antigravity の設定場所に置く。
-   - ワークスペース単位: そのリポジトリの `.agents/hooks.json`
-   - 全体: `~/.gemini/config/hooks.json`
+   ワークスペース単位にしたいなら、`hooks.json` はそのリポジトリの `.agents/hooks.json` でもよい。
+   その場合も `command` はアダプタの絶対パス(`$HOME/.gemini/config/atom-antigravity.sh`)を指す。
 
-   ```bash
-   mkdir -p ~/.gemini/config && cp antigravity-hooks.json ~/.gemini/config/hooks.json
-   ```
+   Claude Code を使っておらず `~/.claude/ble-bridge.py` が無い場合は、`ble-bridge.py` を好きな場所に置き、
+   アダプタ冒頭の `ATOM_BLE_DIR` をそこに向ける。
 
 3. Antigravity を再起動してフックを読み込ませる。適当なコマンドをエージェントに実行させ、
    承認プロンプトで赤 → 承認して白 → 完了で緑 → 青、と遷移すれば OK。
 
-`hooks.json` の `command` は `$HOME/.claude/atom-antigravity.sh ...` を指す。アダプタの送信経路は
+`hooks.json` の `command` は `$HOME/.gemini/config/atom-antigravity.sh ...` を指す。アダプタの送信経路は
 冒頭の `ATOM_BLE` / `ATOM_SERIAL` / `ATOM_URL` で切り替わる(既定は BLE、led.sh と同じ)。
 
 ## 注意

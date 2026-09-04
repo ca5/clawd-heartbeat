@@ -2,19 +2,19 @@
   "clawd-heartbeat": {
     "enabled": true,
     "PreInvocation": [
-      { "hooks": [ { "type": "command", "command": "$HOME/.claude/atom-antigravity.sh tool", "timeout": 10 } ] }
+      { "hooks": [ { "type": "command", "command": "$HOME/.gemini/config/atom-antigravity.sh tool", "timeout": 10 } ] }
     ],
     "PostInvocation": [
-      { "hooks": [ { "type": "command", "command": "$HOME/.claude/atom-antigravity.sh tool", "timeout": 10 } ] }
+      { "hooks": [ { "type": "command", "command": "$HOME/.gemini/config/atom-antigravity.sh tool", "timeout": 10 } ] }
     ],
     "PreToolUse": [
-      { "matcher": "run_command", "hooks": [ { "type": "command", "command": "$HOME/.claude/atom-antigravity.sh wait --ask", "timeout": 10 } ] }
+      { "matcher": "run_command", "hooks": [ { "type": "command", "command": "$HOME/.gemini/config/atom-antigravity.sh wait --ask", "timeout": 10 } ] }
     ],
     "PostToolUse": [
-      { "matcher": "run_command", "hooks": [ { "type": "command", "command": "$HOME/.claude/atom-antigravity.sh tool", "timeout": 10 } ] }
+      { "matcher": "run_command", "hooks": [ { "type": "command", "command": "$HOME/.gemini/config/atom-antigravity.sh tool", "timeout": 10 } ] }
     ],
     "Stop": [
-      { "hooks": [ { "type": "command", "command": "$HOME/.claude/atom-antigravity.sh done", "timeout": 10 } ] }
+      { "hooks": [ { "type": "command", "command": "$HOME/.gemini/config/atom-antigravity.sh done", "timeout": 10 } ] }
     ]
   }
 }

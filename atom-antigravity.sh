@@ -23,7 +23,9 @@ ATOM_BLE="1"                          # "1" で BLE。空にすると ATOM_SERIA
 ATOM_SERIAL=""                        # 例: /dev/cu.usbserial-XXXX
 ATOM_URL="http://192.168.1.50"
 ATOM_BLE_SOCK="${TMPDIR:-/tmp}/claude-led-ble.sock"
-ATOM_BLE_DIR="$HOME/.claude"          # ble-bridge.py の置き場所
+# 共有 BLE デーモン ble-bridge.py の置き場所。Claude Code の setup が ~/.claude に置くのでそれを共有する。
+# Claude Code を使っていない/別の場所に置くなら、ここを変える(このアダプタ自身の置き場所とは無関係)
+ATOM_BLE_DIR="$HOME/.claude"
 ATOM_BLE_CMD=""                       # 空なら uv があれば "uv run --script"、無ければ python3
 ATOM_BLE_PYTHON="python3"
 
