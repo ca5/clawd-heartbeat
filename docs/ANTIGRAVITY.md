@@ -76,3 +76,20 @@ BLE 節参照)。Claude Code を BLE で使っていれば、デーモンはそ�
   白/緑が出ないときは、そのバージョンのフック動作を疑う。
 - `sid` は `ag:<conversationId>`。Claude Code のセッション(別 sid)と同じ LED を共有し、
   優先度 `wait > err > done > tool > idle` で集約される(どちらかが承認待ちなら赤)。
+
+## うまく動かないとき(実際にハマった点)
+
+- **フックが 1 個も発火しない**: `hooks.json` の構造がイベントで違う。`PreInvocation` / `PostInvocation` /
+  `Stop` は `matcher` も `hooks` ラッパーも付けず、コマンドオブジェクトを**直接配列に置く**。
+  `PreToolUse` / `PostToolUse` だけ `{ "matcher": ..., "hooks": [ ... ] }` の入れ子。両者を同じ形で書くと
+  発火しない([`antigravity-hooks.json`](../antigravity-hooks.json) が正しい形)。CLI の `hooks` 画面に
+  「1 hook」と出ていても、構造が違うと実行されないことがある。
+- **Antigravity は Fail-Closed**: フックが非 0 終了 / 不正 JSON / タイムアウトになるとツール実行を遮断する。
+  アダプタは全例外を握って必ず適格な JSON を出し exit 0 する。`Stop` は `{"decision":"stop"}`、
+  `PreToolUse` は `{"decision":"ask"}`(または allow/deny 等)が必須。空 `{}` を返すイベントと返せないイベントが
+  あるので混同しない(PostToolUse / invocation は `{}` で可)。
+- **発火しているか確認**: アダプタは呼ばれるたび `~/.gemini/config/atom-antigravity.log` に 1 行追記する。
+  Antigravity を再起動してエージェントに 1 回作業させ、このログに行が出れば発火している。空ならまだ。
+- **$HOME**: `command` が展開されない環境では絶対パスにする(`/Users/<you>/.gemini/config/...`)。
+- **標準出力を汚さない**: stdout は JSON のみ。デバッグ出力は stderr かログファイルへ。
+- **設定変更後は再起動**: Antigravity は起動時に `hooks.json` を読む。
