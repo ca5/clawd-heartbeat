@@ -9,13 +9,15 @@
 # - 送信経路は BLE / USB シリアル / WiFi(HTTP)のいずれか(下の設定で選ぶ。上から優先)
 
 # ↓ 送信経路の設定
-#   BLE       : ATOM_BLE=1。Mac 側の常駐デーモン(ble-bridge.py)が接続を保持し、hook は
-#               Unix ソケットに 1 行書くだけ。Atom は USB 電源だけで離れた場所に置ける。
+#   BLE       : ATOM_BLE=1。常駐デーモン(ble-bridge.py)が接続を保持し、hook はローカルの
+#               ソケットに 1 行書くだけ。Atom は USB 電源だけで離れた場所に置ける。
+#               待ち受けは POSIX が Unix ソケット、Windows が 127.0.0.1:<port>(下の設定参照)。
 #               事前に `pip install bleak` と、初回のみ Bluetooth 使用許可(macOS のダイアログ)が要る
-#   USB シリアル: ATOM_BLE を空にして ATOM_SERIAL にポート(`ls /dev/cu.usbserial-*`)
+#   USB シリアル: ATOM_BLE を空にして ATOM_SERIAL にポート(macOS: `ls /dev/cu.usbserial-*`、
+#               Windows の Git Bash: /dev/ttyS<N> = COM<N+1>。COM3 なら /dev/ttyS2)
 #   WiFi/HTTP : ATOM_BLE と ATOM_SERIAL を空にして ATOM_URL に固定 IP
 ATOM_BLE=""                          # "1" で BLE を使う
-ATOM_SERIAL=""                       # 例: /dev/cu.usbserial-XXXXXXXXXX
+ATOM_SERIAL=""                       # 例: /dev/cu.usbserial-XXXXXXXXXX(Windows は /dev/ttyS2 等)
 ATOM_URL="http://192.168.1.50"
 
 # BLE ブリッジの設定(ATOM_BLE=1 のときだけ使う)
@@ -25,8 +27,32 @@ ATOM_BLE_DIR="$HOME/.claude"         # ble-bridge.py の置き場所(led.sh と�
 # uv 起動なら bleak は PEP 723 のインラインメタデータから自動で用意される
 ATOM_BLE_CMD=""
 ATOM_BLE_PYTHON="python3"            # ソケット送信のフォールバック(bleak 不要・標準ライブラリのみ)
+ATOM_BLE_PORT=""                     # 空でなければ Unix ソケットではなく 127.0.0.1:<port> を使う
 
-now_ms() { perl -MTime::HiRes=time -e 'printf("%.0f", time()*1000)' 2>/dev/null || echo 0; }
+# 上の既定値は ~/.claude/led.conf があれば上書きされる。経路設定をこのスクリプトに直接書くと、
+# リポジトリの更新を `cp led.sh ~/.claude/led.sh` で反映したときに設定ごと消えてしまうため。
+#   例) echo 'ATOM_SERIAL="/dev/ttyS2"' > ~/.claude/led.conf
+[ -r "$HOME/.claude/led.conf" ] && . "$HOME/.claude/led.conf"
+
+# Windows(Git Bash/MSYS)は CPython に AF_UNIX が無く、ble-bridge.py も Unix ソケットで
+# 待ち受けられないので loopback TCP に切り替える(既定ポートは ble-bridge.py の DEFAULT_PORT)。
+# python3 は WindowsApps の Store スタブを踏むことがあるので python を既定にする
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*)
+    [ -n "$ATOM_BLE_PORT" ] || ATOM_BLE_PORT=47820
+    ATOM_BLE_PYTHON="python"
+    ;;
+esac
+
+# 現在時刻。結果は $NOW_MS / $NOW_S に入れる(コマンド置換 $(...) は毎回 fork するため使わない)。
+# bash 5 以降は組み込み変数で 0 プロセスで済む。macOS 標準の bash 3.2 は外部コマンドに落ちる
+if [ -n "${EPOCHREALTIME:-}" ]; then
+  now_ms() { local t="${EPOCHREALTIME/[.,]/}"; NOW_MS="${t:0:${#t}-3}"; }   # 秒.マイクロ秒 → ミリ秒
+  now_s()  { NOW_S="$EPOCHSECONDS"; }
+else
+  now_ms() { NOW_MS=$(perl -MTime::HiRes=time -e 'printf("%.0f", time()*1000)' 2>/dev/null) || NOW_MS=0; }
+  now_s()  { NOW_S=$(date +%s); }
+fi
 
 # BLE: 1 行を常駐デーモンのソケットへ送る。デーモンが居なければ起こしてから送る。
 # デーモンは BLE 接続を張りっぱなしにするので、送信ごとの再接続待ちが無い(応答は読まない)。
@@ -43,6 +69,19 @@ send_ble() {
 
 # ソケットへ 1 行送る。nc -U が無ければ python でフォールバック。接続できなければ非 0
 ble_write() {
+  if [ -n "$ATOM_BLE_PORT" ]; then
+    # bash の /dev/tcp なら nc も python も要らない。subshell に入れておけば、繋がらずに
+    # リダイレクトがこけても呼び手は死なない(exec だと非対話シェルごと終了してしまう)
+    ( printf '%s\n' "$1" >&3
+      IFS= read -r -t 2 _ <&3
+      : ) 3<>"/dev/tcp/127.0.0.1/$ATOM_BLE_PORT" 2>/dev/null && return 0
+    "$ATOM_BLE_PYTHON" - "$ATOM_BLE_PORT" "$1" <<'PY' >/dev/null 2>&1
+import socket, sys
+s = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=2)
+s.sendall((sys.argv[2] + "\n").encode()); s.recv(256); s.close()
+PY
+    return
+  fi
   [ -S "$ATOM_BLE_SOCK" ] || return 1
   if command -v nc >/dev/null 2>&1; then
     printf '%s\n' "$1" | nc -U -w 2 "$ATOM_BLE_SOCK" >/dev/null 2>&1
@@ -55,23 +94,35 @@ PY
   fi
 }
 
+# デーモンが待ち受けているか。TCP は繋いでみる、Unix ソケットは存在で判定する
+ble_alive() {
+  if [ -n "$ATOM_BLE_PORT" ]; then
+    ( : ) 3<>"/dev/tcp/127.0.0.1/$ATOM_BLE_PORT" 2>/dev/null
+  else
+    [ -S "$ATOM_BLE_SOCK" ]
+  fi
+}
+
 # デーモンが居なければ起動(二重起動は mkdir ロックで防ぐ)。接続確立まで少し待つ
 ensure_ble_daemon() {
   local lock="$ATOM_BLE_SOCK.lock"
-  [ -S "$ATOM_BLE_SOCK" ] && return 0
+  ble_alive && return 0
   # ソケットが無いのにロックだけ残っている = 前回の起動が後片付けせず落ちた残骸。
   # デーモンは起動後 3 秒ほどでソケットを作るので、ロックが 15 秒より古ければ掃除する
   if [ -d "$lock" ]; then
     local age
-    age=$(( $(date +%s) - $(stat -f %m "$lock" 2>/dev/null || stat -c %Y "$lock" 2>/dev/null || echo 0) ))
+    now_s
+    age=$(( NOW_S - $(stat -c %Y "$lock" 2>/dev/null || stat -f %m "$lock" 2>/dev/null || echo 0) ))
     [ "$age" -gt 15 ] && rmdir "$lock" 2>/dev/null
   fi
   local cmd="$ATOM_BLE_CMD"
   if [ -z "$cmd" ]; then
     if command -v uv >/dev/null 2>&1; then cmd="uv run --script"; else cmd="$ATOM_BLE_PYTHON"; fi
   fi
+  local listen="--socket $ATOM_BLE_SOCK"
+  [ -n "$ATOM_BLE_PORT" ] && listen="--port $ATOM_BLE_PORT"
   if mkdir "$lock" 2>/dev/null; then
-    ( $cmd "$ATOM_BLE_DIR/ble-bridge.py" --socket "$ATOM_BLE_SOCK" \
+    ( $cmd "$ATOM_BLE_DIR/ble-bridge.py" $listen \
         </dev/null >>"${TMPDIR:-/tmp}/claude-led-ble.log" 2>&1 ; rmdir "$lock" 2>/dev/null ) &
     sleep 3   # スキャン + 接続の確立を待つ(初回だけ)
   fi
@@ -82,22 +133,35 @@ ensure_ble_daemon() {
 # tty.* はキャリア待ちで固まることがあるので cu.* を使う。応答は読まない(hook は投げて終わり)
 send_serial() {
   [ -c "$ATOM_SERIAL" ] || return 1
-  {
-    stty raw -echo -hupcl clocal 115200 <&3 2>/dev/null
-    printf '%s\n' "$1" >&3
-  } 3<>"$ATOM_SERIAL" 2>/dev/null
+  # Windows の COM ポートは排他オープンで、hook が並行して発火すると 2 本目以降の open が
+  # Permission denied になる(macOS の cu.* は同時に開ける)。1 回の送信は数十 ms で終わるので、
+  # 短い間隔で数回やり直せば取りこぼさない。open できたら即 return する
+  local i
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    {
+      # MSYS の COM ポートでは raw/-echo/速度をまとめて設定できず stty が非 0 を返す(適用できる分は
+      # 適用される。-hupcl 単体は成功し、実測でもボードはリセットされない)。set -e 下で落ちないよう許容する
+      stty raw -echo -hupcl clocal 115200 <&3 2>/dev/null || true
+      printf '%s\n' "$1" >&3
+    } 2>/dev/null 3<>"$ATOM_SERIAL" && return 0
+    sleep 0.1
+  done
+  return 1
 }
 
 send_state() {
+  now_ms
   if [ -n "$ATOM_BLE" ]; then
-    send_ble "led s=$1 sid=${2:-default} ts=$(now_ms)"
+    send_ble "led s=$1 sid=${2:-default} ts=$NOW_MS"
   elif [ -n "$ATOM_SERIAL" ]; then
-    send_serial "led s=$1 sid=${2:-default} ts=$(now_ms)"
+    send_serial "led s=$1 sid=${2:-default} ts=$NOW_MS"
   else
-    curl -s -m 1 --retry 2 --retry-all-errors "$ATOM_URL/led?s=$1&sid=${2:-default}&ts=$(now_ms)" >/dev/null 2>&1
+    curl -s -m 1 --retry 2 --retry-all-errors "$ATOM_URL/led?s=$1&sid=${2:-default}&ts=$NOW_MS" >/dev/null 2>&1
   fi
 }
-file_size() { stat -f%z "$1" 2>/dev/null || stat -c%s "$1" 2>/dev/null || echo 0; }
+# GNU(Linux / Git Bash)を先に試す。逆順にすると GNU の `stat -f` が「ファイルシステム情報」の
+# 意味で成功してしまい、ファイルサイズや mtime の代わりにブロック数が返る(BSD は -c を知らず落ちる)
+file_size() { stat -c%s "$1" 2>/dev/null || stat -f%z "$1" 2>/dev/null || echo 0; }
 
 # ダイアログ応答待ちの間、トランスクリプト(JSONL)の追記分を 1 秒間隔で監視する。
 # 「No で拒否」「Ctrl+C で中断」はどの hook イベントも発火しない(実測)が、
@@ -110,8 +174,9 @@ watch_dialog() {
   local intr='"text"[[:space:]]*:[[:space:]]*"\[Request interrupted by user'
   local size new end
   size=$(file_size "$tr")
-  end=$(( $(date +%s) + 600 ))     # マーカーの TTL と同じ 10 分で自然終了
-  while [ "$(date +%s)" -lt "$end" ]; do
+  now_s
+  end=$(( NOW_S + 600 ))           # マーカーの TTL と同じ 10 分で自然終了
+  while now_s && [ "$NOW_S" -lt "$end" ]; do
     sleep 1
     [ -f "$marker" ] || return 0   # 承認完了・新プロンプト等の通常経路で解決済み
     new=$(file_size "$tr")
@@ -138,19 +203,27 @@ fi
 
 sid=""
 if [ ! -t 0 ]; then
-  input=$(cat)
-  jget() { printf '%s' "$input" | sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" | head -1; }
-  sid=$(jget session_id)
-  event=$(jget hook_event_name)
-  tool=$(jget tool_name)
-  tuid=$(jget tool_use_id)
+  IFS= read -r -d '' input      # cat の起動を避けて stdin を丸ごと読む(EOF で非 0 になるだけ)
+  # JSON の文字列フィールドを 1 個取り出して $2 の変数に入れる。sed + head + コマンド置換で
+  # 1 フィールドあたり 3 プロセス起動していたのを bash の正規表現に置き換えた(bash 3.2 でも動く)。
+  # JSON 文字列の内側では引用符が \" にエスケープされるので、素の "key" はキーとしてしか現れない
+  jget() {
+    local re="\"$1\"[[:space:]]*:[[:space:]]*\"([^\"]*)\""
+    if [[ $input =~ $re ]]; then printf -v "$2" '%s' "${BASH_REMATCH[1]}"
+    else printf -v "$2" '%s' ""; fi
+  }
+  jget session_id     sid
+  jget hook_event_name event
+  jget tool_name      tool
+  jget tool_use_id    tuid
   tmp="${TMPDIR:-/tmp}"
   marker="$tmp/claude-led-wait-${sid:-default}"     # "<tuid|-> <tool>" ダイアログ応答待ち
   pending="$tmp/claude-led-pending-${sid:-default}" # "<tuid> <tool>" 直近の PreToolUse
 
   # マーカーの TTL(10分): 解除イベントの取りこぼしで赤が永続しないように
   if [ -f "$marker" ]; then
-    age=$(( $(date +%s) - $(stat -f %m "$marker" 2>/dev/null || stat -c %Y "$marker" 2>/dev/null || echo 0) ))
+    now_s
+    age=$(( NOW_S - $(stat -c %Y "$marker" 2>/dev/null || stat -f %m "$marker" 2>/dev/null || echo 0) ))
     [ "$age" -gt 600 ] && rm -f "$marker"
   fi
 
@@ -178,7 +251,7 @@ if [ ! -t 0 ]; then
       fi
     fi
     # 拒否・中断の監視を起動(ダイアログ 1 回ごとの短命プロセス)
-    tpath=$(jget transcript_path)
+    jget transcript_path tpath
     if [ -n "$tpath" ] && [ -f "$tpath" ]; then
       ( watch_dialog "$tpath" "$marker" "${sid:-default}" ) </dev/null >/dev/null 2>&1 &
     fi

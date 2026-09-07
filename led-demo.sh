@@ -30,15 +30,31 @@ ATOM="${ATOM:-http://192.168.1.50}"
 # シリアルは open/close で DTR/RTS が動くとボードがリセットされるため -hupcl を毎回セットする
 # (led.sh と同じ対策)。応答は "state=" 行が来るまでのノイズ(古い ok 等)を読み飛ばす
 atom_send() {
-  local cmd="$1" path rest line started=0 sock
+  local cmd="$1" path rest line started=0 sock port
   set -- $cmd
   path="$1"; shift
   case "$ATOM" in
     ble|ble:*)
-      # BLE ブリッジのソケットへ 1 行送り、応答を受ける。ソケットのパスは ble:<path> で指定可(既定あり)
-      sock="${ATOM#ble:}"; [ "$sock" = ble ] && sock="${TMPDIR:-/tmp}/claude-led-ble.sock"
-      [ -S "$sock" ] || { echo "BLE ブリッジが起動していません($sock)。led.sh 経由か ble-bridge.py を起動してください" >&2; return 1; }
-      if command -v nc >/dev/null 2>&1; then
+      # BLE ブリッジへ 1 行送り、応答を受ける。ble:<path> で Unix ソケット、ble:<port> で
+      # loopback TCP を指定できる。無指定なら Windows は TCP(47820)、他は既定のソケット
+      sock="${ATOM#ble:}"; [ "$sock" = ble ] && sock=""; port=""
+      case "$sock" in
+        '') case "$(uname -s)" in
+              MINGW*|MSYS*|CYGWIN*) port=47820 ;;
+              *) sock="${TMPDIR:-/tmp}/claude-led-ble.sock" ;;
+            esac ;;
+        *[!0-9]*) ;;                     # 数字以外を含む → Unix ソケットのパス
+        *) port="$sock"; sock="" ;;      # 全部数字 → TCP ポート
+      esac
+      if [ -n "$port" ]; then
+        # Windows には Unix ソケットが無いので bash の /dev/tcp で loopback に繋ぐ
+        ( printf '%s\n' "$cmd" >&3
+          while IFS= read -r -t 3 line <&3; do printf '%s\n' "${line%$'\r'}"; done
+        ) 3<>"/dev/tcp/127.0.0.1/$port" 2>/dev/null \
+          || { echo "BLE ブリッジが起動していません(127.0.0.1:$port)。led.sh 経由か ble-bridge.py を起動してください" >&2; return 1; }
+      elif [ ! -S "$sock" ]; then
+        echo "BLE ブリッジが起動していません($sock)。led.sh 経由か ble-bridge.py を起動してください" >&2; return 1
+      elif command -v nc >/dev/null 2>&1; then
         printf '%s\n' "$cmd" | nc -U -w 3 "$sock"
       else
         python3 - "$sock" "$cmd" <<'PY'
@@ -57,7 +73,9 @@ PY
     /dev/*)
       [ -c "$ATOM" ] || { echo "シリアルポートが見つかりません: $ATOM" >&2; return 1; }
       {
-        stty raw -echo -hupcl clocal 115200 <&3 2>/dev/null
+        # MSYS の COM ポートでは raw/-echo/速度をまとめて設定できず stty が非 0 を返す(適用できる分は
+        # 適用される。-hupcl 単体は成功し、実測でもボードはリセットされない)。set -e 下で落ちないよう許容する
+        stty raw -echo -hupcl clocal 115200 <&3 2>/dev/null || true
         printf '%s\n' "$cmd" >&3
         if [ "$path" = status ]; then
           while IFS= read -r -t 3 line <&3; do
@@ -82,9 +100,13 @@ PY
 
 # シリアル(特に Bluetooth)は open のたびに接続し直すので、再生中はポートを開いたまま接続を維持する。
 # fd 9 を掴んでおくだけ。atom_send 内の fd 3 とは独立
+# ただし Windows(MSYS)の COM ポートは排他オープンなので、掴んだままだと atom_send 側の
+# open が Permission denied になる。USB シリアルは open ごとの再接続待ちも無いので掴まない
+keep_open=1
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) keep_open=0 ;; esac
 case "$ATOM" in
   /dev/*)
-    if [ -c "$ATOM" ]; then
+    if [ -c "$ATOM" ] && [ "$keep_open" -eq 1 ]; then
       exec 9<>"$ATOM"
       stty -hupcl <&9 2>/dev/null || true
       sleep 2   # Bluetooth の接続確立(約 1.5 秒)を待つ

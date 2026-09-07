@@ -3,10 +3,12 @@
 # requires-python = ">=3.9"
 # dependencies = ["bleak>=0.22"]
 # ///
-"""Clawd Heartbeat — BLE 常駐ブリッジ(Mac 側)
+"""Clawd Heartbeat — BLE 常駐ブリッジ(Mac / Windows 側)
 
 macOS は BLE をシリアルポートとして見せてくれないため、このデーモンが Atom への BLE 接続を
-保持し続け、Unix ソケット経由で受け取った 1 行コマンドを GATT の RX 特性へ write する。
+保持し続け、ローカルのソケット経由で受け取った 1 行コマンドを GATT の RX 特性へ write する。
+待ち受け口は POSIX なら Unix ソケット、Windows なら loopback TCP(127.0.0.1:47820)。Windows の
+CPython には AF_UNIX も asyncio.start_unix_server も無いため、ここだけ自動で切り替わる。
 接続は張りっぱなしなので、Bluetooth Classic(SPP)で問題になった「open のたびに約 2 秒の
 再接続待ち + idle で切断」が起きない。
 
@@ -20,6 +22,7 @@ macOS は BLE をシリアルポートとして見せてくれないため、こ
 使い方:
   uv run ble-bridge.py                    # スキャンして name で接続、既定ソケットで待ち受け(推奨)
   uv run ble-bridge.py --address <UUID>   # アドレス直指定(スキャンを省ける。macOS は UUID)
+  uv run ble-bridge.py --port 47820       # Unix ソケットではなく loopback TCP で待つ(Windows 既定)
   echo "led s=tool sid=x" | nc -U /tmp/... # 動作確認(led.sh は自動でこのソケットに書く)
 
 ソケットのプロトコル: 1 接続 = 1 行送信 → 1 行(以上)応答。
@@ -41,11 +44,17 @@ SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
 RX_UUID = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
 TX_UUID = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
 DEFAULT_NAME = "clawd-heartbeat"
+DEFAULT_PORT = 47820        # Unix ソケットが使えない環境(Windows)での待ち受けポート
 
 
 def default_socket():
     base = os.environ.get("TMPDIR", "/tmp")
     return os.path.join(base, "claude-led-ble.sock")
+
+
+def unix_sockets_available():
+    # Windows の CPython は AF_UNIX を持たず、asyncio.start_unix_server も生えていない
+    return hasattr(asyncio, "start_unix_server")
 
 
 def log(msg):
@@ -82,7 +91,10 @@ class Bridge:
                     log(f"device not found (service {SERVICE_UUID[:8]}… / name '{self.name}')")
                     return False
                 addr = dev
-            self.client = BleakClient(addr, disconnected_callback=lambda _c: log("disconnected"))
+            # Windows は GATT の探索結果をキャッシュするので、一度 write に失敗して張り直すと
+            # 特性が見つからなくなることがある。毎回探索し直させる(macOS 側は無関係)
+            kw = {"winrt": {"use_cached_services": False}} if os.name == "nt" else {}
+            self.client = BleakClient(addr, disconnected_callback=lambda _c: log("disconnected"), **kw)
             await self.client.connect()
             try:
                 await self.client.start_notify(TX_UUID, self._on_tx)
@@ -148,7 +160,9 @@ async def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--name", default=DEFAULT_NAME, help="BLE デバイス名(既定: clawd-heartbeat)")
     ap.add_argument("--address", default="", help="BLE アドレス/UUID を直指定(スキャン省略)")
-    ap.add_argument("--socket", default=default_socket(), help="待ち受ける Unix ソケットのパス")
+    ap.add_argument("--socket", default=default_socket(), help="待ち受ける Unix ソケットのパス(POSIX)")
+    ap.add_argument("--port", type=int, default=None,
+                    help=f"Unix ソケットではなく 127.0.0.1:<port> で待ち受ける(Windows 既定: {DEFAULT_PORT})")
     ap.add_argument("--scan", action="store_true", help="近くの BLE デバイスを列挙して終了(診断用)")
     args = ap.parse_args()
 
@@ -161,15 +175,25 @@ async def main():
             log(f"{d.address}  name={adv.local_name or d.name or '?'}  rssi={adv.rssi}  uuids={uuids}{mine}")
         return
 
-    if os.path.exists(args.socket):
-        os.unlink(args.socket)
+    port = args.port
+    if port is None and not unix_sockets_available():
+        port = DEFAULT_PORT     # Windows: Unix ソケットが無いので loopback TCP に落とす
 
     bridge = Bridge(args.name, args.address or None)
     asyncio.create_task(bridge.keepalive())
-    server = await asyncio.start_unix_server(
-        lambda r, w: handle_client(r, w, bridge), path=args.socket)
-    os.chmod(args.socket, 0o600)
-    log(f"listening on {args.socket} (device: {args.address or args.name})")
+    handler = lambda r, w: handle_client(r, w, bridge)
+    if port is not None:
+        # loopback にだけ bind する。外部からは繋がらないが、同じマシンの他プロセスからは
+        # 繋がる(Unix ソケットの 0600 ほど厳密ではない)。送れるのは LED コマンドだけ
+        server = await asyncio.start_server(handler, host="127.0.0.1", port=port)
+        where = f"127.0.0.1:{port}"
+    else:
+        if os.path.exists(args.socket):
+            os.unlink(args.socket)
+        server = await asyncio.start_unix_server(handler, path=args.socket)
+        os.chmod(args.socket, 0o600)
+        where = args.socket
+    log(f"listening on {where} (device: {args.address or args.name})")
     async with server:
         await server.serve_forever()
 

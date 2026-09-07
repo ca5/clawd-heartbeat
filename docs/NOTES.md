@@ -223,6 +223,64 @@ BLE はアイドルでも接続を維持できるので、送信は実測 40ms �
 led.sh は `ATOM_BLE=1` でこの経路を選び、`uv run --script ble-bridge.py` でデーモンを自動起動する
 (初回のみ macOS の Bluetooth 使用許可が要る)。デバイス再起動時はデーモンの keepalive が 5 秒間隔で張り直す。
 
+### Windows 対応(2026-09-07)
+
+Windows でも BLE 経路を動かせるようにした。bleak の WinRT バックエンドは Windows でそのまま動くので、
+詰まったのは BLE 本体ではなく周辺の 3 点だった。
+
+- **Unix ソケットが無い**: Windows の CPython には `socket.AF_UNIX` も `asyncio.start_unix_server` も
+  無いため、デーモンは起動直後に `AttributeError` で落ちる(依存の `uv sync` は通るので「インストール失敗」に見える)。
+  `--port` を足し、Unix ソケットが使えない環境では自動で `127.0.0.1:47820` の loopback TCP に落とすようにした。
+  シェル側(`led.sh` / `atom-antigravity.sh` / `led-test.sh` / `led-demo.sh`)は bash の `/dev/tcp` で書く。
+  `nc -U` も python も要らない。`exec 3<>` ではなく subshell + リダイレクトにしてあるのは、接続失敗時に
+  `exec` が非対話シェルごと終了させてしまうため
+- **CRLF**: `core.autocrlf=true` の Windows で clone すると `.sh` が CRLF になり、shebang 末尾の `\r` で
+  `bad interpreter` になる。`.gitattributes` で `*.sh` / `*.py` を `eol=lf` に固定した
+- **GATT のキャッシュ**: Windows は探索結果をキャッシュするので、write に一度失敗して張り直すと
+  「特性が見つからない」に化ける。Windows のときだけ `winrt={"use_cached_services": False}` を渡す
+
+USB シリアル経路でも Windows 固有の罠が 4 つあった(いずれも実機 COM3 で確認):
+
+- **`stat` の BSD/GNU 差異**: `stat -f %m ... || stat -c %Y ...` の順序が逆だった。GNU では `-f` が
+  「ファイルシステム情報」の意味で**成功してしまう**ため `||` に落ちず、mtime の代わりにブロック数が
+  返って `age=$(( ... ))` が構文エラーになる。GNU(`-c`)を先に試す順序へ直した。macOS の BSD stat は
+  `-c` を知らないので確実にフォールバックする
+- **`stty` が非 0**: MSYS の COM ポートでは `raw` / `-echo` / 速度をまとめて設定できず
+  `unable to perform all requested operations` で exit 1 になる(`-hupcl` 単体・`clocal` 単体は成功)。
+  `set -eu` の led-test.sh / led-demo.sh はここで黙って落ちていた。`|| true` で許容する。
+  適用できる分は適用されるので、DTR/RTS は固定されたまま(open/close を繰り返しても uptime は単調増加)
+- **COM ポートは排他オープン**: macOS の `cu.*` と違い、2 本目以降の open が `Permission denied` になる。
+  hook が並行発火すると取りこぼすため、`send_serial` に 0.1 秒間隔 × 10 回のリトライを入れた
+  (6 並行で全て着弾することを確認)。リダイレクトは左から処理されるので、シェル自身のエラーを消すには
+  `2>/dev/null` を `3<>` **より前**に書く必要がある。led-demo.sh が fd 9 でポートを掴み続ける仕掛けは
+  同じ理由で Windows では自分の `atom_send` を弾くので、MSYS では掴まない
+- **プロセス起動が重い**: Git Bash は 1 プロセス約 70ms かかり、hook 1 回で十数個起動していたため
+  1.18 秒/イベントになっていた。`now_ms` の perl を `EPOCHREALTIME` に、`jget` の sed+head+コマンド置換を
+  bash の `[[ =~ ]]` + `printf -v` に、`cat` を `read -d ''` に置き換えて **0.40 秒/イベント**まで short-cut。
+  いずれも bash 3.2 で動く構文なので macOS 側の挙動は変わらない
+
+USB シリアル(Windows)と BLE(Mac)は同時に使える。firmware は 3 経路を同じ `handleLine` に流して
+sid ごとに集約するので、両方のセッションが 1 個の LED に並んで出る(`status` の `sessions=` で確認できる)。
+
+**経路設定を `~/.claude/led.conf` に分離した(2026-09-07)**。従来は `~/.claude/led.sh` の冒頭を直接
+書き換える手順だったが、リポジトリ側の更新を `cp led.sh ~/.claude/led.sh` で反映すると設定が消え、
+`ATOM_SERIAL` が空のまま HTTP 経路(既定の `192.168.1.50`)に落ちる。curl が 1 秒でタイムアウトして
+`led.sh` の終了コードが 28 になるだけで、stderr には何も出ないので気づきにくい(実際にこれで
+「hook は発火しているのに LED が変わらない」を踏んだ)。`led.sh` は既定値の直後に led.conf を
+`.` で読むので、再コピーしても設定は残る。
+
+hook 側の切り分けでは、Windows でも `bash ~/.claude/led.sh <state>` / `async: true` / `matcher: "*"`
+すべて正常に発火することを確認した(5 通りの起動形をログ付きラッパーで比較)。`$HOME` ではなく `~` に
+してあるのは、hook が PowerShell や cmd から起動されても `~` は展開されずそのまま bash に渡り、
+bash 側が展開してくれるため。`$HOME` は PowerShell/cmd では空になる。
+
+**未解決(環境側)**: 会社の管理端末では MDM が `Bluetooth/ServicesAllowedList` を強制していることがある
+(`HKLM\SOFTWARE\Microsoft\PolicyManager\current\device\Bluetooth`)。許可リストは SIG 標準 UUID だけなので、
+NUS の `6E400001-…` は載っておらず、**スキャンとサービス探索は成功するのに GATT の read/write だけが
+`AccessDenied`(`GattCommunicationStatus=3`、`protocol_error=None`)になる**。ペアリングの有無とは無関係で、
+デバイス／サービスの `request_access_async` はどちらも Allowed(=1)を返す。この状態はスクリプト側では
+回避できない。情シスに UUID を許可リストへ追加してもらうか、USB シリアル / WiFi 経路を使う。
+
 ### プロジェクトの uv 化(2026-09-04)
 
 Python は `ble-bridge.py` の bleak 依存だけ。`pyproject.toml` + `uv.lock` を置き、スクリプト冒頭に
