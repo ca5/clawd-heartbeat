@@ -89,17 +89,22 @@ if [ ! -t 0 ]; then
   [ -n "$cid" ] && sid="ag:$cid"
 fi
 
-# 呼ばれたことの記録(フックが発火しているかの切り分け用。害は無いので常時残す)
-printf '%s state=%s sid=%s\n' "$(date '+%F %T')" "$state" "$sid" >> "$HOME/.gemini/config/atom-antigravity.log" 2>/dev/null
+# 呼ばれたことの記録(フックが発火しているかの切り分け用。害は無いので常時残す)。
+# 書き込み失敗の stderr も外へ漏らさない(stdout の JSON は別途汚さない)
+( printf '%s state=%s sid=%s\n' "$(date '+%F %T')" "$state" "$sid" >> "$HOME/.gemini/config/atom-antigravity.log" ) 2>/dev/null
 
 # 送信は投げっぱなし(フックを待たせない)。初回のデーモン起動もここで裏に回る
 ( send_state "$state" "$sid" ) </dev/null >/dev/null 2>&1 &
 
-# フックの契約に従い stdout へ JSON を返す。
-# PreToolUse(wait --ask)は decision が必須。ask はユーザーに承認を求める(その間 LED は赤)。
-# それ以外は空オブジェクトで「意見なし=挙動を変えない」
+# フックの契約に従い stdout へ JSON を返す(Antigravity は Fail-Closed。不正な出力や非 0 終了は
+# ツール実行を遮断するので、必ず適格な JSON を出して exit 0 する)。
+#   PreToolUse(wait --ask)→ decision 必須。ask はユーザーに承認を求める(その間 LED は赤)
+#   Stop(done)          → decision 必須。stop で「そのまま終了を確定」(continue を強制しない)
+#   それ以外(tool)      → 空オブジェクト(意見なし=挙動を変えない)
 if [ "$state" = "wait" ] && [ "$ask" -eq 1 ]; then
   printf '{"decision":"ask"}\n'
+elif [ "$state" = "done" ]; then
+  printf '{"decision":"stop"}\n'
 else
   printf '{}\n'
 fi
