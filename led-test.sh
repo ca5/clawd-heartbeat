@@ -17,6 +17,34 @@ if [ -z "${ATOM:-}" ] && [ -f "$here/.atom-ip" ]; then
 fi
 ATOM="${ATOM:-http://192.168.1.50}"
 
+# ATOM=auto: 実在するシリアル候補から探す(Windows は差し直しで COM 番号が変わるため)。
+# 候補が 1 本ならそのまま、複数なら status に state= を返したものを採用する
+if [ "$ATOM" = auto ]; then
+  cands=()
+  for p in /dev/ttyS* /dev/cu.usbserial-* /dev/cu.wchusbserial* /dev/cu.SLAB_USBtoUART* /dev/cu.usbmodem*; do
+    [ -c "$p" ] && cands+=("$p")
+  done
+  if [ "${#cands[@]}" -eq 0 ]; then
+    echo "シリアルポートが 1 本も見つかりません(USB が抜けていませんか)" >&2; exit 1
+  elif [ "${#cands[@]}" -eq 1 ]; then
+    ATOM="${cands[0]}"
+  else
+    ATOM=""
+    for p in "${cands[@]}"; do
+      # exit を使うので必ず subshell。{ } だとスクリプト全体が終わってしまう
+      if ( stty raw -echo -hupcl clocal 115200 <&3 2>/dev/null || true
+           printf 'status\n' >&3
+           found=1
+           while IFS= read -r -t 1 line <&3; do
+             case "${line%$'\r'}" in state=*) found=0; break ;; esac
+           done
+           exit "$found" ) 2>/dev/null 3<>"$p"; then ATOM="$p"; break; fi
+    done
+    [ -n "$ATOM" ] || { echo "候補はあるが Clawd Heartbeat が応答しません: ${cands[*]}" >&2; exit 1; }
+  fi
+  echo "auto: $ATOM を使います" >&2
+fi
+
 # コマンド送信の抽象化。引数はシリアル形式で渡し、HTTP のときは URL に変換する:
 #   atom_send "led s=idle sid=demo"  →  シリアル: そのまま 1 行 / HTTP: /led?s=idle&sid=demo
 #   atom_send status                 →  シリアル: 応答を空行まで読む / HTTP: GET /

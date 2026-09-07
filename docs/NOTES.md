@@ -262,6 +262,18 @@ USB シリアル経路でも Windows 固有の罠が 4 つあった(いずれも
 USB シリアル(Windows)と BLE(Mac)は同時に使える。firmware は 3 経路を同じ `handleLine` に流して
 sid ごとに集約するので、両方のセッションが 1 個の LED に並んで出る(`status` の `sessions=` で確認できる)。
 
+**シリアルポートは固定せず自動検出にした(2026-09-07)**。Windows では USB を差し直すと COM 番号
+(= `/dev/ttyS<N>`)が変わるため、`ATOM_SERIAL="auto"` で候補から探すようにした。候補は
+`/dev/ttyS*`(Windows)と `/dev/cu.usbserial-*` / `cu.wchusbserial*` / `cu.SLAB_USBtoUART*` /
+`cu.usbmodem*`(macOS)。存在しない glob は `[ -c ]` で落ちるので OS 判定は要らない。
+見つけたパスは `$TMPDIR/claude-led-serial` にキャッシュし、次回は `[ -c ]` 一発で済ませる
+(実測: 初回 0.51 秒、キャッシュヒット 0.40 秒 = 固定指定時と同じ)。候補が 1 本ならそのまま使い、
+複数あるときだけ `status` を投げて `state=` が返るものを選ぶ(1 本あたり最大 1 秒、変わった時だけ)。
+ポートが無い間は hook が 0.28 秒で静かに失敗し、stderr も汚さない。
+
+注意: 候補列挙に `set -- $cands` を使うとスクリプト本体の `$1`(サブコマンド名)を壊す。
+led.sh は関数内なので影響しないが、led-test.sh ではトップレベルなので配列を使うこと。
+
 **経路設定を `~/.claude/led.conf` に分離した(2026-09-07)**。従来は `~/.claude/led.sh` の冒頭を直接
 書き換える手順だったが、リポジトリ側の更新を `cp led.sh ~/.claude/led.sh` で反映すると設定が消え、
 `ATOM_SERIAL` が空のまま HTTP 経路(既定の `192.168.1.50`)に落ちる。curl が 1 秒でタイムアウトして

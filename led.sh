@@ -13,11 +13,12 @@
 #               ソケットに 1 行書くだけ。Atom は USB 電源だけで離れた場所に置ける。
 #               待ち受けは POSIX が Unix ソケット、Windows が 127.0.0.1:<port>(下の設定参照)。
 #               事前に `pip install bleak` と、初回のみ Bluetooth 使用許可(macOS のダイアログ)が要る
-#   USB シリアル: ATOM_BLE を空にして ATOM_SERIAL にポート(macOS: `ls /dev/cu.usbserial-*`、
-#               Windows の Git Bash: /dev/ttyS<N> = COM<N+1>。COM3 なら /dev/ttyS2)
+#   USB シリアル: ATOM_BLE を空にして ATOM_SERIAL にポートを指定。"auto" にすると自動検出する
+#               (差し直しで COM 番号が変わる Windows では auto 推奨)。明示するなら
+#               macOS: `ls /dev/cu.usbserial-*`、Windows の Git Bash: /dev/ttyS<N> = COM<N+1>
 #   WiFi/HTTP : ATOM_BLE と ATOM_SERIAL を空にして ATOM_URL に固定 IP
 ATOM_BLE=""                          # "1" で BLE を使う
-ATOM_SERIAL=""                       # 例: /dev/cu.usbserial-XXXXXXXXXX(Windows は /dev/ttyS2 等)
+ATOM_SERIAL=""                       # "auto" / /dev/cu.usbserial-XXXX / /dev/ttyS2 等
 ATOM_URL="http://192.168.1.50"
 
 # BLE ブリッジの設定(ATOM_BLE=1 のときだけ使う)
@@ -128,6 +129,56 @@ ensure_ble_daemon() {
   fi
 }
 
+# シリアルポートの解決。Windows は USB を差し直すと COM 番号(= /dev/ttyS<N>)が変わるため、
+# 設定されたパスが消えていたら候補から探し直し、見つけたものをキャッシュする。
+# ATOM_SERIAL="auto" にしておけば最初から自動検出になる(推奨)。
+# 候補が 1 本ならそのまま使い、複数あるときだけ status を投げて firmware かどうか確かめる
+ATOM_SERIAL_CACHE="${TMPDIR:-/tmp}/claude-led-serial"
+
+# 存在する候補デバイスを列挙(存在しない glob は [ -c ] で落ちるので OS 差は吸収される)
+serial_candidates() {
+  local p
+  for p in /dev/ttyS* /dev/cu.usbserial-* /dev/cu.wchusbserial* /dev/cu.SLAB_USBtoUART* /dev/cu.usbmodem*; do
+    [ -c "$p" ] && printf '%s\n' "$p"
+  done
+}
+
+# そのポートが Clawd Heartbeat か(status に state= が返るか)。読むので 1 秒ほどかかる
+serial_is_atom() {
+  local line
+  {
+    stty raw -echo -hupcl clocal 115200 <&3 2>/dev/null || true
+    printf 'status\n' >&3
+    while IFS= read -r -t 1 line <&3; do
+      case "${line%$'\r'}" in state=*) return 0 ;; esac
+    done
+  } 2>/dev/null 3<>"$1"
+  return 1
+}
+
+# $ATOM_SERIAL を実在するポートに解決する。成功で 0。設定どおりに在れば探索も読み出しもしない
+resolve_serial() {
+  [ -c "$ATOM_SERIAL" ] && return 0
+  local cached=""
+  [ -r "$ATOM_SERIAL_CACHE" ] && read -r cached < "$ATOM_SERIAL_CACHE" 2>/dev/null
+  if [ -n "$cached" ] && [ -c "$cached" ]; then ATOM_SERIAL="$cached"; return 0; fi
+  local cands p
+  cands=$(serial_candidates)
+  [ -n "$cands" ] || return 1
+  set -- $cands
+  if [ $# -eq 1 ]; then
+    ATOM_SERIAL="$1"
+  else
+    ATOM_SERIAL=""
+    for p in "$@"; do
+      if serial_is_atom "$p"; then ATOM_SERIAL="$p"; break; fi
+    done
+    [ -n "$ATOM_SERIAL" ] || return 1
+  fi
+  printf '%s\n' "$ATOM_SERIAL" > "$ATOM_SERIAL_CACHE" 2>/dev/null
+  return 0
+}
+
 # USB シリアル送信。Atom Lite は DTR/RTS が EN/IO0 に配線されており、ポートの open/close で
 # 信号が動くとボードがリセットされる。対策として -hupcl を毎回セットして信号を固定する。
 # tty.* はキャリア待ちで固まることがあるので cu.* を使う。応答は読まない(hook は投げて終わり)
@@ -154,7 +205,7 @@ send_state() {
   if [ -n "$ATOM_BLE" ]; then
     send_ble "led s=$1 sid=${2:-default} ts=$NOW_MS"
   elif [ -n "$ATOM_SERIAL" ]; then
-    send_serial "led s=$1 sid=${2:-default} ts=$NOW_MS"
+    resolve_serial && send_serial "led s=$1 sid=${2:-default} ts=$NOW_MS"
   else
     curl -s -m 1 --retry 2 --retry-all-errors "$ATOM_URL/led?s=$1&sid=${2:-default}&ts=$NOW_MS" >/dev/null 2>&1
   fi
