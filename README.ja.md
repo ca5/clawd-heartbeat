@@ -18,8 +18,8 @@ Claude Code hooks ──HTTP GET(WiFi)──────┐
 送信経路は 3 つ、1 行プロトコルは共通。**WiFi**: hook が HTTP GET を投げる。Atom と Mac が同じネットワークに
 いられるとき向け。**USB シリアル**: hook がシリアルポートに 1 行書く。同じネットワークにいられず
 (端末間通信を遮断する来客用 WiFi、802.1X の社内 WiFi、DHCP 予約不可)、Atom を Mac に USB 直結できるとき向け。
-**BLE**: Mac 側の常駐デーモンが BLE 接続を保持して 1 行を中継する。WiFi が使えない環境で Atom を
-無線(USB 電源のみ)にしたいとき向け。BLE はブランチ `bluetooth-spp` にあり、`main` は WiFi + USB シリアル。
+**BLE**: 常駐デーモン(`ble-bridge.py`)が BLE 接続を保持して 1 行を中継する。WiFi が使えない環境で Atom を
+無線(USB 電源のみ)にしたいとき向け。3 経路とも `main` にあり、macOS と Windows(Git Bash)で動く。
 
 Bluetooth Classic(SPP)を使わない理由: macOS はポートを開いたままでも idle で SPP のリンクを切り、
 送信ごとに約 2 秒の再接続待ちが入るため、ステータス表示には使えない。BLE は接続を保持できるので
@@ -92,25 +92,25 @@ pio device monitor   # "ready: http://<IP>" と "mac: <MAC>" が出る
 **USB シリアル経路**: IP は不要。`ls /dev/cu.usbserial-*` でポートを確認し(名前はチップのシリアル番号由来なので抜き差ししても変わらない)、疎通を見る:
 
 ```bash
-echo /dev/cu.usbserial-XXXXXXXX > .atom-ip   # gitignore 済み。led-test.sh / led-demo.sh が読む
+echo auto > .atom-ip                          # gitignore 済み。led-test.sh / led-demo.sh が読む(auto で自動検出)
 ./led-test.sh status                          # state=idle ... が返れば OK
 ```
 
 WiFi は任意。SSID を空にすると WiFi を一切使わず(起動時の紫も出ない)、SSID があれば両経路が同時に使える。WiFi が切れてもデバイスは再起動しなくなった。
 
-**BLE 経路**(ブランチ `bluetooth-spp`): ファームウェアが BLE ペリフェラルとして広告し、Mac 側の常駐デーモンが接続を保持してコマンドを中継する。[uv](https://docs.astral.sh/uv/)(または `pip install bleak`)と、初回の macOS Bluetooth 使用許可が要る。
+**BLE 経路**: ファームウェアが BLE ペリフェラルとして広告し、常駐デーモンが接続を保持してコマンドを中継する。[uv](https://docs.astral.sh/uv/)(または `pip install bleak`)と、初回の macOS Bluetooth 使用許可が要る。デーモンの待ち受け口は POSIX が Unix ソケット、Windows は `127.0.0.1:47820`(`AF_UNIX` が無いため自動で切り替わる)。
 
 ```bash
 uv run ble-bridge.py            # スキャン→接続→保持。初回の許可ダイアログは許可する
 ATOM=ble ./led-test.sh status   # state=... ble=connected が出れば OK
 ```
 
-hook を BLE にするには `~/.claude/led.sh` 冒頭の `ATOM_BLE="1"`(`ATOM_SERIAL` は空のまま)。SessionStart hook に `led.sh ensure-ble` を足すと、最初のイベントより前にデーモン(と BLE 接続)が立ち上がる。led.sh は必要時に `uv run --script` で自動起動もする(フォールバック):
+hook を BLE にするには `~/.claude/led.conf` に `ATOM_BLE="1"` を書く(`ATOM_SERIAL` は空のまま)。SessionStart hook に `led.sh ensure-ble` を足すと、最初のイベントより前にデーモン(と BLE 接続)が立ち上がる。led.sh は必要時に `uv run --script` で自動起動もする(フォールバック):
 
 ```json
 "SessionStart": [{ "hooks": [
-  { "type": "command", "command": "$HOME/.claude/led.sh ensure-ble", "async": true },
-  { "type": "command", "command": "$HOME/.claude/led.sh idle", "async": true }
+  { "type": "command", "command": "bash ~/.claude/led.sh ensure-ble", "async": true },
+  { "type": "command", "command": "bash ~/.claude/led.sh idle", "async": true }
 ] }]
 ```
 
@@ -120,11 +120,21 @@ hook を BLE にするには `~/.claude/led.sh` 冒頭の `ATOM_BLE="1"`(`ATOM_S
 
 ### 2. hook 設定
 
-リポジトリの [`led.sh`](led.sh) を `~/.claude/led.sh` にコピーし、冒頭で経路を設定する。USB なら `ATOM_SERIAL` にポートのパス、WiFi なら空のままにして `ATOM_URL` に固定 IP:
+リポジトリの [`led.sh`](led.sh) を `~/.claude/led.sh` にコピーし、経路は `~/.claude/led.conf` に書く。
+led.sh は既定値の直後に led.conf を読むので、**リポジトリの更新を再コピーで取り込んでも設定は消えない**
+(led.sh 本体を書き換えると消える。設定が消えると HTTP 経路に落ち、curl が exit 28 を返すだけで
+stderr には何も出ないので気づけない):
 
 ```bash
 cp led.sh ~/.claude/led.sh && chmod +x ~/.claude/led.sh
+
+echo 'ATOM_SERIAL="auto"'          > ~/.claude/led.conf   # USB シリアル(ポートは自動検出)
+echo 'ATOM_BLE="1"'                > ~/.claude/led.conf   # BLE
+echo 'ATOM_URL="http://192.168.1.50"' > ~/.claude/led.conf # WiFi(固定 IP)
 ```
+
+USB シリアルの `auto` は、候補(macOS の `/dev/cu.usbserial-*` 等、Windows の `/dev/ttyS*`)から
+ポートを探して結果をキャッシュする。差し直しで番号が変わっても追従し、定常状態の追加コストは無い。
 
 led.sh は単なる送信ラッパーではなく、以下を担っている(詳細は docs/NOTES.md):
 
@@ -137,27 +147,42 @@ led.sh は単なる送信ラッパーではなく、以下を担っている(詳
 - 送信時刻(ms)を付与し、async hook の着弾順逆転をデバイス側で排除
 - USB ではポートを `-hupcl` で開き、DTR/RTS を動かさない(動くと hook のたびにボードが
   リセットされる。シリアル案が当初不採用だった理由)
+- シリアルポートの解決とキャッシュ(`auto`)。Windows の COM ポートは排他オープンなので、
+  hook が並行発火したときは短い間隔でリトライして取りこぼさない
 
 `~/.claude/settings.json` の `hooks` に以下をマージ(全イベント `"async": true` 必須):
 
 ```json
 {
   "hooks": {
-    "SessionStart":      [{ "hooks": [{ "type": "command", "command": "$HOME/.claude/led.sh idle", "async": true }] }],
-    "UserPromptSubmit":  [{ "hooks": [{ "type": "command", "command": "$HOME/.claude/led.sh tool", "async": true }] }],
-    "PreToolUse":        [{ "matcher": "*", "hooks": [{ "type": "command", "command": "$HOME/.claude/led.sh tool", "async": true }] }],
-    "PostToolUse":       [{ "matcher": "*", "hooks": [{ "type": "command", "command": "$HOME/.claude/led.sh tool", "async": true }] }],
-    "PostToolUseFailure": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "$HOME/.claude/led.sh tool", "async": true }] }],
-    "PermissionRequest": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "$HOME/.claude/led.sh wait", "async": true }] }],
-    "PermissionDenied":  [{ "matcher": "*", "hooks": [{ "type": "command", "command": "$HOME/.claude/led.sh idle", "async": true }] }],
-    "Stop":              [{ "hooks": [{ "type": "command", "command": "$HOME/.claude/led.sh done", "async": true }] }],
-    "StopFailure":       [{ "hooks": [{ "type": "command", "command": "$HOME/.claude/led.sh err", "async": true }] }],
-    "SessionEnd":        [{ "hooks": [{ "type": "command", "command": "$HOME/.claude/led.sh idle", "async": true }] }]
+    "SessionStart":      [{ "hooks": [{ "type": "command", "command": "bash ~/.claude/led.sh idle", "async": true }] }],
+    "UserPromptSubmit":  [{ "hooks": [{ "type": "command", "command": "bash ~/.claude/led.sh tool", "async": true }] }],
+    "PreToolUse":        [{ "matcher": "*", "hooks": [{ "type": "command", "command": "bash ~/.claude/led.sh tool", "async": true }] }],
+    "PostToolUse":       [{ "matcher": "*", "hooks": [{ "type": "command", "command": "bash ~/.claude/led.sh tool", "async": true }] }],
+    "PostToolUseFailure": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "bash ~/.claude/led.sh tool", "async": true }] }],
+    "PermissionRequest": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "bash ~/.claude/led.sh wait", "async": true }] }],
+    "PermissionDenied":  [{ "matcher": "*", "hooks": [{ "type": "command", "command": "bash ~/.claude/led.sh idle", "async": true }] }],
+    "Stop":              [{ "hooks": [{ "type": "command", "command": "bash ~/.claude/led.sh done", "async": true }] }],
+    "StopFailure":       [{ "hooks": [{ "type": "command", "command": "bash ~/.claude/led.sh err", "async": true }] }],
+    "SessionEnd":        [{ "hooks": [{ "type": "command", "command": "bash ~/.claude/led.sh idle", "async": true }] }]
   }
 }
 ```
 
 Claude Code を再起動し、`/hooks` で読み込みを確認。
+
+コマンドを `$HOME/...` ではなく `bash ~/...` にしているのは、hook がどのシェルから起動されても
+動くようにするため。Windows では PowerShell や cmd から起動されることがあり、そこでは `$HOME` が
+展開されず `.sh` も直接実行できない。`~` は展開されずそのまま bash に渡り、bash 側が展開してくれる。
+
+### Windows(Git Bash)で使う場合
+
+- **Git Bash が必要**。`bash` が PATH にあること(`where.exe bash` で確認)
+- シリアルポートは `/dev/ttyS<N>` = `COM<N+1>`(COM3 なら `/dev/ttyS2`)。差し直しで番号が変わるので
+  `ATOM_SERIAL="auto"` を推奨
+- スクリプトを PowerShell から叩くときは `bash -c` に包む: `bash -c 'ATOM=auto ./led-test.sh status'`
+- COM ポートの確認は `[System.IO.Ports.SerialPort]::GetPortNames()`
+- 会社の管理端末では BLE が使えないことがある(下のトラブルシュート参照)
 
 ## FAQ — 既知の挙動(検知済みだが対処不能なもの)
 
@@ -233,6 +258,10 @@ WiFi 接続中の表示です。点きっぱなしの場合は 2.4GHz の SSID �
 | 承認待ちなのに赤くならない | `/hooks` で PermissionRequest の読み込みを確認 |
 | Claude Code が重い | hooks の `async: true`(WiFi なら curl の `-m 1` も)を確認 |
 | `pio device monitor` が動かない | TTY 必須のためバックグラウンド実行不可。docs/NOTES.md の pyserial 手順を使う |
+| hook は発火しているのに LED が変わらない | 経路設定が消えていないか。`~/.claude/led.sh` を再コピーすると本体に直接書いた設定は消える(設定は `~/.claude/led.conf` に置く)。空だと HTTP 経路に落ち、curl が exit 28 を返すだけで無言に失敗する |
+| Windows で `bad interpreter` | `core.autocrlf=true` で `.sh` が CRLF になっている。`.gitattributes` で `eol=lf` に固定してあるので、clone し直すか `git add --renormalize .` |
+| Windows で BLE の read/write が Access Denied | 管理端末の MDM ポリシー `Bluetooth/ServicesAllowedList` が SIG 標準 UUID のみ許可している。スキャンとサービス探索は成功するのに GATT だけ拒否される。回避不能なので USB シリアルか WiFi を使う |
+| Windows で COM ポートが消える | ケーブルのデータ線の断線が多い(電源線は生きているので LED は点いたまま)。`[System.IO.Ports.SerialPort]::GetPortNames()` が空で、別の USB 機器は同じポートで認識される場合はケーブルを交換する |
 
 ## ケース
 

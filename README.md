@@ -16,7 +16,7 @@ Claude Code hooks ──HTTP GET (WiFi)──────┐
                     line command (BLE)───┘
 ```
 
-Three transports, same one-line protocol. **WiFi**: the hook sends an HTTP GET — pick it when the Atom can share a network with the Mac. **USB serial**: the hook writes a line to the serial port — pick it when they can't share a network (guest WiFi with client isolation, corporate 802.1X, no DHCP reservations) and the Atom is plugged into the Mac. **BLE**: a small resident daemon on the Mac holds a Bluetooth Low Energy connection and forwards the lines — pick it to keep the Atom wireless (USB power only) where WiFi won't work. BLE lives on the `bluetooth-spp` branch; `main` ships WiFi + USB serial.
+Three transports, same one-line protocol. **WiFi**: the hook sends an HTTP GET — pick it when the Atom can share a network with the Mac. **USB serial**: the hook writes a line to the serial port — pick it when they can't share a network (guest WiFi with client isolation, corporate 802.1X, no DHCP reservations) and the Atom is plugged into the Mac. **BLE**: a small resident daemon (`ble-bridge.py`) holds a Bluetooth Low Energy connection and forwards the lines — pick it to keep the Atom wireless (USB power only) where WiFi won't work. All three transports are on `main` and work on macOS and Windows (Git Bash).
 
 Why not Bluetooth Classic (SPP)? macOS drops an idle SPP serial link even with the port held open and needs ~2 s to reconnect on every send, so it can't back a status light. BLE keeps the connection open, so sends land in tens of milliseconds. See docs/NOTES.md.
 
@@ -83,28 +83,28 @@ If the board won't enter download mode, hold the button (the LED face itself) wh
 pio device monitor   # prints "ready: http://<IP>" and "mac: <MAC>"
 ```
 
-**USB serial transport**: no IP needed. Find the port with `ls /dev/cu.usbserial-*` (the name is derived from the chip's serial number, so it stays stable across replugs) and check the link:
+**USB serial transport**: no IP needed. `auto` finds the port for you — handy on Windows, where replugging renumbers the COM port:
 
 ```bash
-echo /dev/cu.usbserial-XXXXXXXX > .atom-ip   # gitignored; led-test.sh / led-demo.sh read it
+echo auto > .atom-ip                          # gitignored; led-test.sh / led-demo.sh read it
 ./led-test.sh status                          # should print state=idle ...
 ```
 
 WiFi is optional: with an empty SSID the firmware skips WiFi entirely (no purple boot phase). With an SSID set, both transports work at once and a WiFi outage no longer reboots the device.
 
-**BLE transport** (branch `bluetooth-spp`): the firmware advertises as a BLE peripheral, and a resident Mac-side daemon holds the connection and forwards command lines. It needs [uv](https://docs.astral.sh/uv/) (or `pip install bleak`) and, on first run, macOS Bluetooth permission.
+**BLE transport**: the firmware advertises as a BLE peripheral, and a resident daemon holds the connection and forwards command lines. It needs [uv](https://docs.astral.sh/uv/) (or `pip install bleak`) and, on first run, macOS Bluetooth permission. The daemon listens on a Unix socket on POSIX and on `127.0.0.1:47820` on Windows, which has no `AF_UNIX`.
 
 ```bash
 uv run ble-bridge.py            # scans, connects, holds the link; grant the Bluetooth prompt once
 ATOM=ble ./led-test.sh status   # should print state=... ble=connected
 ```
 
-Point the hook at BLE by setting `ATOM_BLE="1"` at the top of `~/.claude/led.sh` (leave `ATOM_SERIAL` empty). Add `led.sh ensure-ble` to the SessionStart hook so the daemon (and its BLE connection) is up before the first event; led.sh also autostarts it on demand via `uv run --script` as a fallback:
+Point the hook at BLE by putting `ATOM_BLE="1"` in `~/.claude/led.conf` (leave `ATOM_SERIAL` empty). Add `led.sh ensure-ble` to the SessionStart hook so the daemon (and its BLE connection) is up before the first event; led.sh also autostarts it on demand via `uv run --script` as a fallback:
 
 ```json
 "SessionStart": [{ "hooks": [
-  { "type": "command", "command": "$HOME/.claude/led.sh ensure-ble", "async": true },
-  { "type": "command", "command": "$HOME/.claude/led.sh idle", "async": true }
+  { "type": "command", "command": "bash ~/.claude/led.sh ensure-ble", "async": true },
+  { "type": "command", "command": "bash ~/.claude/led.sh idle", "async": true }
 ] }]
 ```
 
@@ -114,11 +114,17 @@ Requires the 3 MB app partition, already set in `platformio.ini`.
 
 ### 2. Hook setup
 
-Copy [`led.sh`](led.sh) to `~/.claude/led.sh` and set the transport at the top: `ATOM_SERIAL` (USB port path) for serial, or leave it empty and set `ATOM_URL` for WiFi:
+Copy [`led.sh`](led.sh) to `~/.claude/led.sh` and put the transport in `~/.claude/led.conf`, which led.sh sources right after its defaults. Keeping it in a separate file means **re-copying led.sh to pick up repo changes doesn't wipe your settings** — editing led.sh itself does, and a wiped setting falls through to the HTTP branch, where curl just exits 28 with nothing on stderr:
 
 ```bash
 cp led.sh ~/.claude/led.sh && chmod +x ~/.claude/led.sh
+
+echo 'ATOM_SERIAL="auto"'              > ~/.claude/led.conf   # USB serial, port auto-detected
+echo 'ATOM_BLE="1"'                    > ~/.claude/led.conf   # BLE
+echo 'ATOM_URL="http://192.168.1.50"'  > ~/.claude/led.conf   # WiFi
 ```
+
+`auto` globs the plausible candidates (`/dev/cu.usbserial-*` and friends on macOS, `/dev/ttyS*` on Git Bash), picks the port that answers, and caches it — so a replug that renumbers the port costs nothing in the steady state.
 
 led.sh is more than a send wrapper (details in docs/NOTES.md):
 
@@ -139,21 +145,31 @@ Merge the following into `hooks` in `~/.claude/settings.json` (`"async": true` o
 ```json
 {
   "hooks": {
-    "SessionStart":      [{ "hooks": [{ "type": "command", "command": "$HOME/.claude/led.sh idle", "async": true }] }],
-    "UserPromptSubmit":  [{ "hooks": [{ "type": "command", "command": "$HOME/.claude/led.sh tool", "async": true }] }],
-    "PreToolUse":        [{ "matcher": "*", "hooks": [{ "type": "command", "command": "$HOME/.claude/led.sh tool", "async": true }] }],
-    "PostToolUse":       [{ "matcher": "*", "hooks": [{ "type": "command", "command": "$HOME/.claude/led.sh tool", "async": true }] }],
-    "PostToolUseFailure": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "$HOME/.claude/led.sh tool", "async": true }] }],
-    "PermissionRequest": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "$HOME/.claude/led.sh wait", "async": true }] }],
-    "PermissionDenied":  [{ "matcher": "*", "hooks": [{ "type": "command", "command": "$HOME/.claude/led.sh idle", "async": true }] }],
-    "Stop":              [{ "hooks": [{ "type": "command", "command": "$HOME/.claude/led.sh done", "async": true }] }],
-    "StopFailure":       [{ "hooks": [{ "type": "command", "command": "$HOME/.claude/led.sh err", "async": true }] }],
-    "SessionEnd":        [{ "hooks": [{ "type": "command", "command": "$HOME/.claude/led.sh idle", "async": true }] }]
+    "SessionStart":      [{ "hooks": [{ "type": "command", "command": "bash ~/.claude/led.sh idle", "async": true }] }],
+    "UserPromptSubmit":  [{ "hooks": [{ "type": "command", "command": "bash ~/.claude/led.sh tool", "async": true }] }],
+    "PreToolUse":        [{ "matcher": "*", "hooks": [{ "type": "command", "command": "bash ~/.claude/led.sh tool", "async": true }] }],
+    "PostToolUse":       [{ "matcher": "*", "hooks": [{ "type": "command", "command": "bash ~/.claude/led.sh tool", "async": true }] }],
+    "PostToolUseFailure": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "bash ~/.claude/led.sh tool", "async": true }] }],
+    "PermissionRequest": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "bash ~/.claude/led.sh wait", "async": true }] }],
+    "PermissionDenied":  [{ "matcher": "*", "hooks": [{ "type": "command", "command": "bash ~/.claude/led.sh idle", "async": true }] }],
+    "Stop":              [{ "hooks": [{ "type": "command", "command": "bash ~/.claude/led.sh done", "async": true }] }],
+    "StopFailure":       [{ "hooks": [{ "type": "command", "command": "bash ~/.claude/led.sh err", "async": true }] }],
+    "SessionEnd":        [{ "hooks": [{ "type": "command", "command": "bash ~/.claude/led.sh idle", "async": true }] }]
   }
 }
 ```
 
 Restart Claude Code and confirm the hooks are loaded with `/hooks`.
+
+The commands are `bash ~/...` rather than `$HOME/...` so they work whichever shell launches the hook. On Windows that may be PowerShell or cmd, where `$HOME` doesn't expand and a `.sh` file isn't directly executable; `~` passes through untouched and bash expands it.
+
+### On Windows (Git Bash)
+
+- **Git Bash is required** — `bash` must be on PATH (`where.exe bash`)
+- Serial ports are `/dev/ttyS<N>` = `COM<N+1>` (COM3 is `/dev/ttyS2`). Replugging renumbers them, so prefer `ATOM_SERIAL="auto"`
+- To run the scripts from PowerShell, wrap them: `bash -c 'ATOM=auto ./led-test.sh status'`
+- List COM ports with `[System.IO.Ports.SerialPort]::GetPortNames()`
+- A managed machine may not be able to use BLE at all — see Troubleshooting
 
 ## FAQ — known behaviors (detected, but nothing we can do)
 
@@ -208,7 +224,7 @@ For filming or a quick visual check, `led-demo.sh` plays the animations automati
 
 Tip: `led-test.sh rgb R G B` holds a fixed color for 10 minutes, which makes still photography much easier than chasing a blink.
 
-The device address comes from the `ATOM` environment variable or a gitignored `.atom-ip` file next to the script — either an HTTP URL (`http://192.168.1.50`) or a serial port path (`/dev/cu.usbserial-XXXX`); the scripts pick the transport from the prefix.
+The device address comes from the `ATOM` environment variable or a gitignored `.atom-ip` file next to the script, and the scripts pick the transport from the value: an HTTP URL (`http://192.168.1.50`), a serial port path (`/dev/cu.usbserial-XXXX`, `/dev/ttyS2`), `auto` to find the serial port itself, or `ble` (optionally `ble:<socket>` / `ble:<port>`) to go through the BLE daemon.
 
 ## Troubleshooting
 
@@ -222,6 +238,10 @@ The device address comes from the `ATOM` environment variable or a gitignored `.
 | No red on permission prompts | Check `/hooks` shows PermissionRequest loaded |
 | Claude Code feels slow | Verify `async: true` on hooks (and `-m 1` on curl for the WiFi transport) |
 | `pio device monitor` fails | It needs a TTY and can't run in the background; use the pyserial recipe in docs/NOTES.md |
+| Hooks fire but the LED never changes | Your transport setting is probably gone. Re-copying `~/.claude/led.sh` wipes anything edited into the file itself — keep it in `~/.claude/led.conf`. With nothing set, led.sh falls through to HTTP and curl just exits 28, silently |
+| `bad interpreter` on Windows | `core.autocrlf=true` gave the `.sh` files CRLF. `.gitattributes` pins them to `eol=lf`, so re-clone or run `git add --renormalize .` |
+| BLE reads/writes return Access Denied on Windows | A managed machine may enforce the MDM policy `Bluetooth/ServicesAllowedList`, which allowlists SIG UUIDs only: scanning and service discovery succeed while every GATT operation is denied. There is no way around it — use the serial or WiFi transport |
+| COM port disappears on Windows | Usually a broken data line in the cable — power still gets through, so the LED stays lit. If `[System.IO.Ports.SerialPort]::GetPortNames()` is empty but another USB device enumerates on the same port, replace the cable |
 
 ## Case
 
