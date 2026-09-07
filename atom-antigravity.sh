@@ -89,6 +89,9 @@ if [ ! -t 0 ]; then
   [ -n "$cid" ] && sid="ag:$cid"
 fi
 
+# 呼ばれたことの記録(フックが発火しているかの切り分け用。害は無いので常時残す)
+printf '%s state=%s sid=%s\n' "$(date '+%F %T')" "$state" "$sid" >> "$HOME/.gemini/config/atom-antigravity.log" 2>/dev/null
+
 # 送信は投げっぱなし(フックを待たせない)。初回のデーモン起動もここで裏に回る
 ( send_state "$state" "$sid" ) </dev/null >/dev/null 2>&1 &
 
