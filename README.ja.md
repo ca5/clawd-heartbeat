@@ -25,6 +25,7 @@ Bluetooth Classic(SPP)を使わない理由: macOS はポートを開いたま�
 送信ごとに約 2 秒の再接続待ちが入るため、ステータス表示には使えない。BLE は接続を保持できるので
 送信は数十ミリ秒で届く(docs/NOTES.md 参照)。
 
+Google Antigravity のフックから同じ LED を光らせる方法は [`ANTIGRAVITY.md`](docs/ANTIGRAVITY.md)、
 設計の経緯・不採用案(シリアル直叩きがリセットを起こす理由。USB 経路はこれを回避している、NOTES.md 参照)は [`HANDOFF.md`](docs/HANDOFF.md)、
 構築後の運用情報・設計判断ログは [`NOTES.md`](docs/NOTES.md)、
 イベントのライフサイクルと LED の対応(「Yes 押したのに赤いまま」の理由など)は

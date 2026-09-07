@@ -1,0 +1,20 @@
+{
+  "clawd-heartbeat": {
+    "enabled": true,
+    "PreInvocation": [
+      { "type": "command", "command": "$HOME/.gemini/config/atom-antigravity.sh tool", "timeout": 5 }
+    ],
+    "PostInvocation": [
+      { "type": "command", "command": "$HOME/.gemini/config/atom-antigravity.sh tool", "timeout": 5 }
+    ],
+    "PreToolUse": [
+      { "matcher": "run_command", "hooks": [ { "type": "command", "command": "$HOME/.gemini/config/atom-antigravity.sh wait --ask", "timeout": 5 } ] }
+    ],
+    "PostToolUse": [
+      { "matcher": "run_command", "hooks": [ { "type": "command", "command": "$HOME/.gemini/config/atom-antigravity.sh tool", "timeout": 5 } ] }
+    ],
+    "Stop": [
+      { "type": "command", "command": "$HOME/.gemini/config/atom-antigravity.sh done", "timeout": 5 }
+    ]
+  }
+}
