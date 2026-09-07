@@ -33,6 +33,7 @@ const uint8_t BRIGHTNESS = 255;     // ケース(拡散シェード)前提で最
 #define WIFI_RETRY_MS (5UL * 60UL * 1000UL) // 無線併用時、WiFi 未接続なら再接続を試みる間隔
 #define SERIAL_LINE_MAX 200               // シリアル/BLE コマンド 1 行の最大長(超えた行は捨てる)
 #define BLE_RX_RING 512                   // BLE 受信リングバッファ(BLE タスク → loop の受け渡し)
+#define BLE_MAX_CONN 3                    // 同時に接続できる central の数(ESP32 の上限 = 3)
 #define MAX_SESSIONS 8
 
 CRGB leds[1];
@@ -44,7 +45,7 @@ WebServer server(80);
 bool wifiConfigured = false;      // secrets.h の SSID が空でない
 bool httpStarted = false;         // WiFi 接続後に mDNS / WebServer を起動済み
 bool bleReady = false;            // BLE 初期化済み
-volatile bool bleConnected = false;
+volatile int bleConns = 0;        // 現在接続中の central 数(複数マシン対応)
 bool anyCommand = false;          // 起動後に 1 回でもコマンド(HTTP / シリアル / BLE)を受けた
 unsigned long bootMs = 0;
 unsigned long wifiAttemptMs = 0;  // 最後に WiFi.begin() した時刻(間欠再接続用)
@@ -175,7 +176,7 @@ String statusBody() {
   unsigned long now = millis();
   String wifi = !wifiConfigured ? "off"
               : (WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : "connecting");
-  String ble = !bleReady ? "off" : (bleConnected ? "connected" : "advertising");
+  String ble = !bleReady ? "off" : (bleConns > 0 ? (String("connected n=") + bleConns) : "advertising");
   String body = String("state=") + (rawActive ? "raw" : STATE_NAMES[(int)aggregate(now)]) +
     "\nsessions=" + String(activeSessions(now)) +
     "\nuptime=" + String(now / 1000) + "s" +
@@ -296,10 +297,14 @@ class RxCallbacks : public BLECharacteristicCallbacks {
 };
 
 class ServerCallbacks : public BLEServerCallbacks {
-  void onConnect(BLEServer*) override { bleConnected = true; }
+  void onConnect(BLEServer* s) override {
+    if (bleConns < BLE_MAX_CONN) bleConns++;
+    // 1 台目の接続後も広告を続け、2 台目以降(別マシン)も受け付ける。上限まで
+    if (bleConns < BLE_MAX_CONN) s->startAdvertising();
+  }
   void onDisconnect(BLEServer* s) override {
-    bleConnected = false;
-    s->startAdvertising();           // 切断されたら再び広告して次の接続を待つ
+    if (bleConns > 0) bleConns--;
+    s->startAdvertising();           // 空きができたので再び広告
   }
 };
 
@@ -345,7 +350,7 @@ void pollBle() {
         String resp = handleLine(String(r.buf));
         if (txChar && resp.length()) {        // 応答は TX に載せる(read で取れる。購読時は notify)
           txChar->setValue(resp.c_str());
-          if (bleConnected) txChar->notify();
+          if (bleConns > 0) txChar->notify();
         }
       }
       r.len = 0;
@@ -410,7 +415,7 @@ void render() {
       // 青のゆっくり点滅で「リンク待ち」を示す。接続中は従来どおり青の常灯。
       // 1 秒周期の点滅は wait(400ms)/done(150ms)/err(120ms)と速度で区別できる。
       // 新しい状態が届いていれば必ず接続中なので、この区別が要るのは idle のときだけ
-      if (BLE_ENABLED && !bleConnected)
+      if (BLE_ENABLED && bleConns == 0)
         c = ((now / 1000) % 2) ? CRGB(CHSV(160, 255, 110)) : CRGB(CRGB::Black);   // 青のゆっくり点滅
       else
         c = CHSV(160, 255, 128);                       // 青の常灯(フルの 1/2。ケース越し視認用)
