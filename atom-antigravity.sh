@@ -23,9 +23,10 @@ ATOM_BLE="1"                          # "1" で BLE。空にすると ATOM_SERIA
 ATOM_SERIAL=""                        # 例: /dev/cu.usbserial-XXXX
 ATOM_URL="http://192.168.1.50"
 ATOM_BLE_SOCK="${TMPDIR:-/tmp}/claude-led-ble.sock"
-# 共有 BLE デーモン ble-bridge.py の置き場所。Claude Code の setup が ~/.claude に置くのでそれを共有する。
-# Claude Code を使っていない/別の場所に置くなら、ここを変える(このアダプタ自身の置き場所とは無関係)
-ATOM_BLE_DIR="$HOME/.claude"
+# BLE デーモン ble-bridge.py の置き場所。既定はこのアダプタと同じディレクトリ
+# (Antigravity 単体のマシンは ble-bridge.py をアダプタの隣に置けば自己完結する)。
+# Claude Code と共有するなら ~/.claude を指してもよい(そちらのデーモンが動いていれば流用される)
+ATOM_BLE_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd || echo "$HOME/.claude")"
 ATOM_BLE_CMD=""                       # 空なら uv があれば "uv run --script"、無ければ python3
 ATOM_BLE_PYTHON="python3"
 

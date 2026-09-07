@@ -42,24 +42,27 @@ Antigravity のフックには権限・承認専用のイベントが無い。�
 
 ## セットアップ
 
-前提: BLE 経路が動いていること(`ble-bridge.py` と `~/.claude/ble-bridge.py`、[README](../README.md) の
-BLE 節参照)。Claude Code を BLE で使っていれば、デーモンはそのまま共有される。
+前提: ファームウェアが BLE 対応で書き込まれていること([README](../README.md) の BLE 節参照)。
+Antigravity 単体のマシンでも、アダプタが `uv run --script` で `ble-bridge.py` を自動起動するので、
+Claude Code は不要(初回のみ macOS の Bluetooth 使用許可が要る)。
 
-1. アダプタとフック設定を Antigravity の設定ディレクトリに置く(アダプタは Antigravity のものなので
-   Antigravity 側に置く。共有デーモン `ble-bridge.py` は Claude Code の setup が置いた `~/.claude` を
-   そのまま使う)。
+**Antigravity だけのマシン**(Claude Code 無し):アダプタ・デーモン・フック設定をすべて
+`~/.gemini/config/` に置く。アダプタは既定で自分と同じディレクトリの `ble-bridge.py` を探す。
 
-   ```bash
-   mkdir -p ~/.gemini/config
-   cp atom-antigravity.sh ~/.gemini/config/atom-antigravity.sh && chmod +x ~/.gemini/config/atom-antigravity.sh
-   cp antigravity-hooks.json ~/.gemini/config/hooks.json
-   ```
+```bash
+mkdir -p ~/.gemini/config
+cp atom-antigravity.sh ~/.gemini/config/atom-antigravity.sh && chmod +x ~/.gemini/config/atom-antigravity.sh
+cp ble-bridge.py       ~/.gemini/config/ble-bridge.py
+cp antigravity-hooks.json ~/.gemini/config/hooks.json
+sed -i '' "s|\$HOME|$HOME|g" ~/.gemini/config/hooks.json   # command を絶対パスに($HOME 非展開対策)
+```
 
-   ワークスペース単位にしたいなら、`hooks.json` はそのリポジトリの `.agents/hooks.json` でもよい。
-   その場合も `command` はアダプタの絶対パス(`$HOME/.gemini/config/atom-antigravity.sh`)を指す。
+**Claude Code と同居するマシン**:`ble-bridge.py` は Claude 側(`~/.claude`)のデーモンを共有できる。
+アダプタとフック設定だけ `~/.gemini/config/` に置き、必要なら `ATOM_BLE_DIR` を `~/.claude` に向ける
+(同居時は Claude の SessionStart でデーモンが立つので、通常はアダプタからの自動起動は使われない)。
 
-   Claude Code を使っておらず `~/.claude/ble-bridge.py` が無い場合は、`ble-bridge.py` を好きな場所に置き、
-   アダプタ冒頭の `ATOM_BLE_DIR` をそこに向ける。
+ワークスペース単位にしたいなら、`hooks.json` はそのリポジトリの `.agents/hooks.json` でもよい。
+その場合も `command` はアダプタの絶対パスを指す。
 
 3. Antigravity を再起動してフックを読み込ませる。適当なコマンドをエージェントに実行させ、
    承認プロンプトで赤 → 承認して白 → 完了で緑 → 青、と遷移すれば OK。
