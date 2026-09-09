@@ -66,6 +66,16 @@ This repo ships with a `CLAUDE.md` and two skills. Clone it, open Claude Code in
 
 The manual steps below are the same procedure, if you prefer doing it yourself.
 
+**Two different roles.** The firmware is flashed **once, from any machine**; adding another
+machine to drive the LED needs no rebuild.
+
+| Role | Needs |
+| :--- | :--- |
+| Flashing the firmware | PlatformIO + toolchain. Once |
+| Driving the LED | `led.sh`, `led.conf`, a bridge script, uv (or pip). **No PlatformIO** |
+
+If you are only adding a second machine, skip to "2. Hook setup".
+
 ### 1. Build and flash
 
 Requirement: [PlatformIO Core CLI](https://platformio.org/) (`brew install platformio`)

@@ -74,6 +74,16 @@ Google Antigravity のフックから同じ LED を光らせる方法は [`ANTIG
 
 手動でやりたい場合は以下が同じ手順です。
 
+**端末の役割は 2 つに分かれます。** ファームウェアは**どこか 1 台で焼けば済み**、あとから
+LED をつなぐ端末が増えても再ビルドは要りません。
+
+| 役割 | 必要なもの |
+| :--- | :--- |
+| ファームウェアを焼く端末 | PlatformIO + ツールチェーン。1 回だけ |
+| LED をつなぐ端末 | `led.sh` / `led.conf` / ブリッジスクリプト / uv(または pip)。**PlatformIO は不要** |
+
+2 台目以降を足すだけなら「2. hook 設定」から読んでください。
+
 ### 1. ビルドと書き込み
 
 要件: [PlatformIO Core CLI](https://platformio.org/)(`brew install platformio`)

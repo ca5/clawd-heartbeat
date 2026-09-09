@@ -223,6 +223,19 @@ BLE はアイドルでも接続を維持できるので、送信は実測 40ms �
 led.sh は `ATOM_BLE=1` でこの経路を選び、`uv run --script ble-bridge.py` でデーモンを自動起動する
 (初回のみ macOS の Bluetooth 使用許可が要る)。デバイス再起動時はデーモンの keepalive が 5 秒間隔で張り直す。
 
+### 端末の役割分担: 焼く端末とつなぐ端末(2026-09-09)
+
+混同しやすいので明記する。**ファームウェアはどこか 1 台で焼けば済む**。デバイスに書き込まれた
+あとは、LED をつなぐ端末が何台増えても再ビルドは要らない。
+
+- **焼く端末**: PlatformIO + ツールチェーンが必要。TLS 検査下では初回取得に CA の対処が要る(後述)
+- **つなぐ端末**: `led.sh` / `~/.claude/led.conf` / ブリッジスクリプト(`hid-bridge.py` か
+  `ble-bridge.py`)/ uv(または pip)だけ。**PlatformIO は不要なので CA の問題も踏まない**
+
+実例として、HOGP 対応の書き込みは Windows から行い、Mac は書き込まずに BLE でつないだ
+(それまでの書き込みは Mac から行っていた)。どちらの端末が焼いてもよい。
+2 台目以降を足す作業は README の「2. hook 設定」から始められる。
+
 ### HOGP(BLE HID)経路の追加(2026-09-09)
 
 管理 Windows 端末の MDM が `Bluetooth/ServicesAllowedList` で SIG 標準 UUID しか許可せず、
@@ -278,7 +291,11 @@ HID を触るホストだけがペアリングを要求され、Mac は平文の
 
 - **TLS 検査**: 社内ルート CA が Windows 証明書ストアにはあるが `requests` の certifi には無く、
   `pio` のパッケージ取得が `HTTPClientError`(実体は `CERTIFICATE_VERIFY_FAILED`)になる。
-  Windows のルート CA を PEM に書き出して certifi と結合し `REQUESTS_CA_BUNDLE` で渡すと通る
+  Windows のルート CA を PEM に書き出して certifi と結合し `REQUESTS_CA_BUNDLE` で渡すと通る。
+  **必要なのは初回のパッケージ取得だけ**で、導入後の通常ビルドは CA 無しで通る(実測 7.7 秒で成功)。
+  再度必要になるのは platform のバージョン変更・`~/.platformio` の削除・`lib_deps` の追加など、
+  再取得が走るとき。`uv` は rustls で OS の証明書ストアを見るため影響を受けない
+  (hidapi / bleak / pyserial はいずれも素で取得できた)
 - **DLP(Purview Information Protection)**: `~/.platformio` 配下の `.csv` が `.pfile` に暗号化
   ラップされ、パーティション生成が `UnicodeDecodeError` で落ちる(20 個全滅)。書き直しても
   数秒で再暗号化される。正本をリポジトリ外に置いて `-c` で別 ini から指す形で回避した

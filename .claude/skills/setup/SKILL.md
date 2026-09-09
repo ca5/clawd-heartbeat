@@ -21,6 +21,13 @@ description: >
 
 ## 0. 前提確認
 
+まず**何をしたいのか**を切り分ける。ファームウェアは 1 台で焼けば済み、つなぐ端末が増えても
+再ビルドは要らない:
+
+- **2 台目以降を LED につなぐだけ** → 0〜2 を飛ばして「3. 宛先の確認」+「4. hook 設定」へ。
+  PlatformIO は不要(TLS 検査下の企業端末でも詰まらない)
+- **初回、またはファームウェアを変える** → 以下を順に
+
 1. `pio --version` で PlatformIO Core CLI の有無を確認。なければ `brew install platformio`(macOS)等で導入
 2. M5Atom Lite を USB 接続し、ポートが見えるか確認。macOS/Linux は
    `ls /dev/cu.usb* /dev/ttyUSB* /dev/ttyACM*`、Windows の Git Bash は `ls /dev/ttyS*`
