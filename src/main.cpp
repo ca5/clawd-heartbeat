@@ -36,7 +36,8 @@ const uint8_t BRIGHTNESS = 255;     // ケース(拡散シェード)前提で最
 //     ベンダー定義コレクションは開ける。ドライバ不要・管理者権限不要
 // NUS とは共存する。受信リングと handleLine は共用なので、状態集約は経路を問わず 1 本。
 #define HID_REPORT_ID  1
-#define HID_REPORT_LEN 64                 // Output(host→Atom)/ Input(Atom→host)共通の長さ
+#define HID_OUT_LEN    64                 // host → Atom(コマンド 1 行。短いので小さく保つ)
+#define HID_IN_LEN     512                // Atom → host(statusBody を丸ごと。GATT の属性長上限)
 
 static const uint8_t hidReportMap[] = {
   0x06, 0x00, 0xFF,                       // Usage Page (Vendor Defined 0xFF00)
@@ -47,13 +48,14 @@ static const uint8_t hidReportMap[] = {
   0x15, 0x00,                             //   Logical Minimum (0)
   0x26, 0xFF, 0x00,                       //   Logical Maximum (255)
   0x75, 0x08,                             //   Report Size (8 bit)
-  0x95, HID_REPORT_LEN,                   //   Report Count
+  0x95, HID_OUT_LEN,                      //   Report Count (64)
   0x91, 0x02,                             //   Output (Data,Var,Abs)
-  0x09, 0x03,                             //   Usage (0x03) — Input: 応答([len][payload])
+  0x09, 0x03,                             //   Usage (0x03) — Input: 応答(NUL 終端の本文)
   0x15, 0x00,
   0x26, 0xFF, 0x00,
   0x75, 0x08,
-  0x95, HID_REPORT_LEN,
+  0x96, (uint8_t)(HID_IN_LEN & 0xFF),     //   Report Count (512。256 以上は 0x96 の 2 バイト形式)
+        (uint8_t)(HID_IN_LEN >> 8),
   0x81, 0x02,                             //   Input (Data,Var,Abs)
   0xC0                                    // End Collection
 };
@@ -340,7 +342,7 @@ class RxCallbacks : public BLECharacteristicCallbacks {
 class HidOutputCallbacks : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic* c) override {
     String v = c->getValue().c_str();
-    for (size_t i = 0; i < v.length(); i++) {
+    for (size_t i = 0; i < v.length() && i < HID_OUT_LEN; i++) {
       size_t next = (bleHead + 1) % BLE_RX_RING;
       if (next == bleTail) return;    // 満杯なら以降を捨てる
       bleRing[bleHead] = (uint8_t)v[i];
@@ -351,26 +353,20 @@ class HidOutputCallbacks : public BLECharacteristicCallbacks {
   }
 };
 
-// 応答を Input Report で返す。1 レポート = [len][payload...]、len=0 で終端。
-// statusBody() は 64 バイトに収まらないので分割して送る
+// 応答を Input Report に丸ごと載せる(NUL 終端)。ホストは GATT read
+// (Windows なら HidD_GetInputReport)で取る。
+// 当初は [len][payload] の分割 + notify にしていたが、read で取れるのは「最後に setValue した値」
+// = 終端レポートだけになり、しかも notify の購読は BLE リンクが張り直されると黙って失われる
+// (実測)。read を正とする設計に変えて分割をやめた。notify は 512B を載せられない(MTU-3 が上限)
+// ので撃たない
 void hidSendResponse(const String& body) {
   if (!hidInput) return;
-  const size_t chunk = HID_REPORT_LEN - 1;
-  uint8_t buf[HID_REPORT_LEN];
-  size_t off = 0;
-  while (off < body.length()) {
-    size_t n = body.length() - off;
-    if (n > chunk) n = chunk;
-    buf[0] = (uint8_t)n;
-    memcpy(buf + 1, body.c_str() + off, n);
-    if (n < chunk) memset(buf + 1 + n, 0, chunk - n);
-    hidInput->setValue(buf, HID_REPORT_LEN);
-    hidInput->notify();
-    off += n;
-  }
-  memset(buf, 0, HID_REPORT_LEN);       // len=0 の終端レポート
-  hidInput->setValue(buf, HID_REPORT_LEN);
-  hidInput->notify();
+  static uint8_t buf[HID_IN_LEN];        // 512B をスタックに置かない
+  size_t n = body.length();
+  if (n > HID_IN_LEN - 1) n = HID_IN_LEN - 1;   // 溢れたら切る(診断用なので許容)
+  memcpy(buf, body.c_str(), n);
+  memset(buf + n, 0, HID_IN_LEN - n);
+  hidInput->setValue(buf, HID_IN_LEN);
 }
 
 class ServerCallbacks : public BLEServerCallbacks {

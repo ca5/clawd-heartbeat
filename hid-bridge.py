@@ -17,7 +17,10 @@ SIG 標準 UUID しか許可しておらず、NUS のカスタム UUID では GA
 (キーボード/マウスのコレクションは OS がユーザー空間から開かせないが、ベンダー定義は開ける)。
 
   hook (led.sh) ──1行──> ソケット ──> hid-bridge.py ──Output Report──> Atom
-                                       Atom ──Input Report──> status の応答
+                                       Atom <──Input Report の read── status の応答
+
+status の読み出しは notify ではなく **GATT read**(Windows では HidD_GetInputReport)で行う。
+notify の購読は BLE リンクが張り直されると黙って失われることがあり、依存できない(実測)。
 
 使い方:
   uv run hid-bridge.py --scan     # 候補の HID デバイスを列挙(まずこれで見えるか確認)
@@ -27,6 +30,7 @@ import argparse
 import asyncio
 import os
 import sys
+import time
 
 try:
     import hid
@@ -36,7 +40,8 @@ except ImportError:
 
 # firmware(src/main.cpp)と一致させること
 HID_REPORT_ID = 1
-HID_REPORT_LEN = 64          # Output / Input どちらも 64 バイト
+HID_OUT_LEN = 64             # host → Atom(コマンド 1 行)
+HID_IN_LEN = 512             # Atom → host(status の本文を丸ごと)
 VENDOR_USAGE_PAGE = 0xFF00   # report map の Usage Page (Vendor Defined)
 DEFAULT_NAME = "clawd-heartbeat"
 DEFAULT_PORT = 47821         # ble-bridge.py の 47820 とぶつけない
@@ -110,41 +115,29 @@ class Bridge:
                 pass
         self.dev = None
 
-    def _drain(self):
-        """溜まっている Input Report を捨てる。status の応答に古いレポートが混ざらないように。"""
-        for _ in range(64):
-            if not self.dev.read(HID_REPORT_LEN + 1, 1):
-                return
-
-    def _read_response(self, timeout_ms=1500):
-        """Input Report を [len][payload] として読み、len=0 で終端。status 用。"""
-        chunks = []
-        while True:
-            data = self.dev.read(HID_REPORT_LEN + 1, timeout_ms)
-            if not data:
-                break
-            if data and data[0] == HID_REPORT_ID and len(data) > HID_REPORT_LEN:
-                data = data[1:]          # 先頭が report ID の実装(Windows)を吸収
-            n = data[0]
-            if n == 0:
-                break
-            chunks.append(bytes(data[1:1 + n]))
-            timeout_ms = 400             # 続きは早めに切り上げる
-        return b"".join(chunks).decode(errors="replace")
+    def _read_response(self):
+        """Input Report を GATT read して NUL 終端の本文を取り出す。"""
+        data = self.dev.get_input_report(HID_REPORT_ID, HID_IN_LEN + 1)
+        if not data:
+            return ""
+        b = bytes(data)
+        if len(b) > HID_IN_LEN:
+            b = b[1:]                    # 先頭が report ID の実装(Windows)を吸収
+        end = b.find(b"\0")
+        return b[:end if end >= 0 else len(b)].decode(errors="replace")
 
     async def send_line(self, line: str) -> str:
         async with self.lock:
             if not self._open():
                 return f"error: {self.last_error or 'not connected'}\n"
-            payload = line.encode()[:HID_REPORT_LEN - 1]
-            report = bytes([HID_REPORT_ID]) + payload + b"\0" * (HID_REPORT_LEN - len(payload))
+            payload = line.encode()[:HID_OUT_LEN - 1]
+            report = bytes([HID_REPORT_ID]) + payload + b"\0" * (HID_OUT_LEN - len(payload))
             try:
-                if line.strip() == "status":
-                    self._drain()        # 応答を読む前に古いレポートを捨てる
                 self.dev.write(report)
                 if line.strip() == "status":
+                    time.sleep(0.25)     # firmware が loop() で処理して setValue するのを待つ
                     body = self._read_response()
-                    return body if body else "error: no response\n"
+                    return (body if body.endswith("\n") else body + "\n") if body else "error: no response\n"
                 return "ok\n"
             except Exception as e:
                 log(f"write failed: {e}")

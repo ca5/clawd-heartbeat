@@ -88,7 +88,11 @@ sock_write() {
     # bash の /dev/tcp なら nc も python も要らない。subshell に入れておけば、繋がらずに
     # リダイレクトがこけても呼び手は死なない(exec だと非対話シェルごと終了してしまう)
     ( printf '%s\n' "$3" >&3
-      IFS= read -r -t 2 _ <&3
+      # デーモンの応答を見る。"error: ..." を成功扱いにすると、ペアリングが切れていても
+      # led.sh は届いたと判断してフォールバックが働かない(実測で踏んだ)。
+      # 応答が無い(タイムアウト)場合は投げっぱなしとして成功扱いのまま
+      IFS= read -r -t 2 reply <&3
+      case "$reply" in error:*) exit 1 ;; esac
       : ) 3<>"/dev/tcp/127.0.0.1/$2" 2>/dev/null && return 0
     "$ATOM_BLE_PYTHON" - "$2" "$3" <<'PY' >/dev/null 2>&1
 import socket, sys

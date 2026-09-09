@@ -252,9 +252,23 @@ Output / Input Report にしてある:
   open できることを先に実測してから設計した
 - Output Report(host→Atom, 64B)= コマンド 1 行を NUL 埋め。`getValue().c_str()` が NUL で
   切れる性質を使って 1 write = 1 行として扱い、NUS と同じ SPSC リングに積む
-- Input Report(Atom→host, 64B)= `[len][payload]`、`len=0` で終端。`statusBody()` は 64B に
-  収まらないので分割送出する。送るのは `status` のときだけ(毎回流すとホストのキューに
-  古い応答が溜まり、次の `status` が汚れる)
+- Input Report(Atom→host, 512B)= 本文を NUL 終端で丸ごと。**ホストは notify ではなく
+  GATT read**(Windows は `HidD_GetInputReport`)で取る。Output は 64B のまま(コマンドは短く、
+  無駄に長いと BLE の long write になる)。Report Count が 256 以上なので `0x95` の 1 バイト形式では
+  表現できず `0x96` の 2 バイト形式を使う
+
+**当初 notify + 分割送出にして失敗した**。`[len][payload]` を複数レポートに分けて notify する
+設計だったが、2 つの理由で破綻した:
+
+1. **read で取れるのは「最後に setValue した値」だけ**。分割すると終端レポート(`len=0`)しか
+   読めない。実測で `get_input_report` が 65B 返すのに中身が全ゼロで気づいた
+2. **notify の購読は BLE リンクが張り直されると黙って失われる**。しばらく動いていた `status` が
+   ある時点から `error: no response` になり、`connection_status=1`(CONNECTED)・広告も正常・
+   書き込みも届く(LED は変化する)のに応答だけ来ない状態になった
+
+教訓: **HOGP で host ← device の応答を取るなら read を正とする**。notify は購読状態に依存し、
+その状態を host 側から確認する手段が無い。read なら購読と無関係に必ず取れる。
+分割をやめたことでファームウェアもブリッジも短くなった
 
 実測結果:
 
@@ -263,7 +277,7 @@ Output / Input Report にしてある:
 | GATT のアクセス | 通る(0x1812 は許可リストにある) |
 | ユーザー空間からの open | 成功。`3a30:7180 up=0xFF00 clawd-heartbeat`。ドライバ・管理者権限不要 |
 | NUS との同時接続 | 成功。`ble=connected n=2`(Mac の NUS + Windows の HOGP) |
-| hook のレイテンシ | **0.22 秒/イベント**。USB シリアル(0.40 秒)より速い。ポートの open/close が無いため |
+| hook のレイテンシ | **0.19〜0.22 秒/イベント**。USB シリアル(0.40 秒)より速い。ポートの open/close が無いため |
 | 完全ワイヤレス | 成功。USB を抜いた状態で動作 |
 
 「HOGP にすると同時 3 接続が後退する」という懸念は、NUS を置き換えず併設したことで回避できた
@@ -283,6 +297,10 @@ HID を触るホストだけがペアリングを要求され、Mac は平文の
 - **PnP ID のバイト順**: ライブラリが vid/pid をビッグエンディアンで書くため、
   `pnp(0x02, 0x303A, 0x8071, ...)` はホストから `3a30:7180` と見える。表示上の問題だけで、
   hid-bridge.py は usage page と product string で照合しているので動作に影響はない
+- **led.sh がデーモンのエラーを見ていなかった**。`sock_write` は応答を 1 行読むだけで内容を
+  見ておらず、デーモンが `error: ...` を返しても成功扱いになり、USB シリアルへのフォールバックが
+  働かなかった。`error:` で始まる応答は失敗として扱うように修正(応答なし=タイムアウトは
+  投げっぱなしとして成功のまま)
 - **ブートループ中は診断ツールが固まる**。パニックしたデバイスは起動ログを延々流すので、
   `led-test.sh status` の `while read -t 3` が終わらず COM ポートを掴んだまま固まった。
   読み取り行数に上限を入れて修正済み(led-test.sh / led-demo.sh / led.sh の serial_is_atom)
