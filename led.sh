@@ -6,17 +6,22 @@
 # - 拒否・中断は hook に流れないため、ダイアログ表示中だけトランスクリプトを
 #   監視して痕跡(拒否の tool_result / 中断メッセージ)を検知したら赤を解除する
 # - 手動実行(tty)時は stdin を読まず sid=default で送る
-# - 送信経路は BLE / USB シリアル / WiFi(HTTP)のいずれか(下の設定で選ぶ。上から優先)
+# - 送信経路は HOGP / BLE / USB シリアル / WiFi(HTTP)のいずれか(下の設定で選ぶ。上から優先)
 
 # ↓ 送信経路の設定
+#   HOGP      : ATOM_HID=1。BLE HID(HID over GATT)としてペアリングした Atom へ、常駐デーモン
+#               (hid-bridge.py)が Output Report で送る。BLE リンクは OS の HID ドライバが
+#               保持するので再接続・スリープ復帰の面倒が無い。MDM の Bluetooth 許可リストが
+#               カスタム UUID を弾く管理端末でも通る(HID の 0x1812 は許可されている)
 #   BLE       : ATOM_BLE=1。常駐デーモン(ble-bridge.py)が接続を保持し、hook はローカルの
 #               ソケットに 1 行書くだけ。Atom は USB 電源だけで離れた場所に置ける。
 #               待ち受けは POSIX が Unix ソケット、Windows が 127.0.0.1:<port>(下の設定参照)。
 #               事前に `pip install bleak` と、初回のみ Bluetooth 使用許可(macOS のダイアログ)が要る
-#   USB シリアル: ATOM_BLE を空にして ATOM_SERIAL にポートを指定。"auto" にすると自動検出する
+#   USB シリアル: ATOM_HID と ATOM_BLE を空にして ATOM_SERIAL にポートを指定。"auto" で自動検出
 #               (差し直しで COM 番号が変わる Windows では auto 推奨)。明示するなら
 #               macOS: `ls /dev/cu.usbserial-*`、Windows の Git Bash: /dev/ttyS<N> = COM<N+1>
-#   WiFi/HTTP : ATOM_BLE と ATOM_SERIAL を空にして ATOM_URL に固定 IP
+#   WiFi/HTTP : 上の 3 つを空にして ATOM_URL に固定 IP
+ATOM_HID=""                          # "1" で HOGP(BLE HID)を使う。BLE より優先
 ATOM_BLE=""                          # "1" で BLE を使う
 ATOM_SERIAL=""                       # "auto" / /dev/cu.usbserial-XXXX / /dev/ttyS2 等
 ATOM_URL="http://192.168.1.50"
@@ -30,6 +35,12 @@ ATOM_BLE_CMD=""
 ATOM_BLE_PYTHON="python3"            # ソケット送信のフォールバック(bleak 不要・標準ライブラリのみ)
 ATOM_BLE_PORT=""                     # 空でなければ Unix ソケットではなく 127.0.0.1:<port> を使う
 
+# HOGP ブリッジの設定(ATOM_HID=1 のときだけ使う)。ソケットのプロトコルは BLE と同一
+ATOM_HID_SOCK="${TMPDIR:-/tmp}/claude-led-hid.sock"
+ATOM_HID_PORT=""                     # 空でなければ 127.0.0.1:<port>(Windows で自動設定)
+ATOM_HID_DIR="$HOME/.claude"         # hid-bridge.py の置き場所
+ATOM_HID_CMD=""                      # 空なら uv があれば "uv run --script"、無ければ python
+
 # 上の既定値は ~/.claude/led.conf があれば上書きされる。経路設定をこのスクリプトに直接書くと、
 # リポジトリの更新を `cp led.sh ~/.claude/led.sh` で反映したときに設定ごと消えてしまうため。
 #   例) echo 'ATOM_SERIAL="/dev/ttyS2"' > ~/.claude/led.conf
@@ -41,6 +52,7 @@ ATOM_BLE_PORT=""                     # 空でなければ Unix ソケットで�
 case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*)
     [ -n "$ATOM_BLE_PORT" ] || ATOM_BLE_PORT=47820
+    [ -n "$ATOM_HID_PORT" ] || ATOM_HID_PORT=47821
     ATOM_BLE_PYTHON="python"
     ;;
 esac
@@ -68,26 +80,28 @@ send_ble() {
   return 1
 }
 
-# ソケットへ 1 行送る。nc -U が無ければ python でフォールバック。接続できなければ非 0
-ble_write() {
-  if [ -n "$ATOM_BLE_PORT" ]; then
+# 常駐デーモンのソケットへ 1 行送る。ble-bridge.py と hid-bridge.py はプロトコルが同一なので
+# ここを共有する。$1=Unix ソケットのパス / $2=TCP ポート(空なら Unix) / $3=送る行。
+# nc -U が無ければ python でフォールバック。接続できなければ非 0
+sock_write() {
+  if [ -n "$2" ]; then
     # bash の /dev/tcp なら nc も python も要らない。subshell に入れておけば、繋がらずに
     # リダイレクトがこけても呼び手は死なない(exec だと非対話シェルごと終了してしまう)
-    ( printf '%s\n' "$1" >&3
+    ( printf '%s\n' "$3" >&3
       IFS= read -r -t 2 _ <&3
-      : ) 3<>"/dev/tcp/127.0.0.1/$ATOM_BLE_PORT" 2>/dev/null && return 0
-    "$ATOM_BLE_PYTHON" - "$ATOM_BLE_PORT" "$1" <<'PY' >/dev/null 2>&1
+      : ) 3<>"/dev/tcp/127.0.0.1/$2" 2>/dev/null && return 0
+    "$ATOM_BLE_PYTHON" - "$2" "$3" <<'PY' >/dev/null 2>&1
 import socket, sys
 s = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=2)
 s.sendall((sys.argv[2] + "\n").encode()); s.recv(256); s.close()
 PY
     return
   fi
-  [ -S "$ATOM_BLE_SOCK" ] || return 1
+  [ -S "$1" ] || return 1
   if command -v nc >/dev/null 2>&1; then
-    printf '%s\n' "$1" | nc -U -w 2 "$ATOM_BLE_SOCK" >/dev/null 2>&1
+    printf '%s\n' "$3" | nc -U -w 2 "$1" >/dev/null 2>&1
   else
-    "$ATOM_BLE_PYTHON" - "$ATOM_BLE_SOCK" "$1" <<'PY' >/dev/null 2>&1
+    "$ATOM_BLE_PYTHON" - "$1" "$3" <<'PY' >/dev/null 2>&1
 import socket, sys
 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.settimeout(2)
 s.connect(sys.argv[1]); s.sendall((sys.argv[2] + "\n").encode()); s.recv(256); s.close()
@@ -96,13 +110,18 @@ PY
 }
 
 # デーモンが待ち受けているか。TCP は繋いでみる、Unix ソケットは存在で判定する
-ble_alive() {
-  if [ -n "$ATOM_BLE_PORT" ]; then
-    ( : ) 3<>"/dev/tcp/127.0.0.1/$ATOM_BLE_PORT" 2>/dev/null
+sock_alive() {
+  if [ -n "$2" ]; then
+    ( : ) 3<>"/dev/tcp/127.0.0.1/$2" 2>/dev/null
   else
-    [ -S "$ATOM_BLE_SOCK" ]
+    [ -S "$1" ]
   fi
 }
+
+ble_write() { sock_write "$ATOM_BLE_SOCK" "$ATOM_BLE_PORT" "$1"; }
+ble_alive() { sock_alive "$ATOM_BLE_SOCK" "$ATOM_BLE_PORT"; }
+hid_write() { sock_write "$ATOM_HID_SOCK" "$ATOM_HID_PORT" "$1"; }
+hid_alive() { sock_alive "$ATOM_HID_SOCK" "$ATOM_HID_PORT"; }
 
 # デーモンが居なければ起動(二重起動は mkdir ロックで防ぐ)。接続確立まで少し待つ
 ensure_ble_daemon() {
@@ -145,11 +164,14 @@ serial_candidates() {
 
 # そのポートが Clawd Heartbeat か(status に state= が返るか)。読むので 1 秒ほどかかる
 serial_is_atom() {
-  local line
+  local line n=0
   {
     stty raw -echo -hupcl clocal 115200 <&3 2>/dev/null || true
     printf 'status\n' >&3
-    while IFS= read -r -t 1 line <&3; do
+    # 行数に上限を置く。ブートループ中のデバイスは起動ログを延々流すので、
+    # 上限が無いとここで固まる(led-test.sh で実測)
+    while [ "$n" -lt 60 ] && IFS= read -r -t 1 line <&3; do
+      n=$((n + 1))
       case "${line%$'\r'}" in state=*) return 0 ;; esac
     done
   } 2>/dev/null 3<>"$1"
@@ -179,6 +201,42 @@ resolve_serial() {
   return 0
 }
 
+# HOGP: 1 行を hid-bridge.py のソケットへ送る。BLE リンクは OS が保持しているので、
+# デーモンは開いた HID デバイスに Output Report を書くだけ。起動も BLE より速い
+send_hid() {
+  hid_write "$1" && return 0
+  ensure_hid_daemon
+  local i
+  for i in 1 2 3; do
+    hid_write "$1" && return 0
+    sleep 0.3
+  done
+  return 1
+}
+
+# デーモンが居なければ起動(二重起動は mkdir ロックで防ぐ)
+ensure_hid_daemon() {
+  local lock="$ATOM_HID_SOCK.lock"
+  hid_alive && return 0
+  if [ -d "$lock" ]; then
+    local age
+    now_s
+    age=$(( NOW_S - $(stat -c %Y "$lock" 2>/dev/null || stat -f %m "$lock" 2>/dev/null || echo 0) ))
+    [ "$age" -gt 15 ] && rmdir "$lock" 2>/dev/null
+  fi
+  local cmd="$ATOM_HID_CMD"
+  if [ -z "$cmd" ]; then
+    if command -v uv >/dev/null 2>&1; then cmd="uv run --script"; else cmd="$ATOM_BLE_PYTHON"; fi
+  fi
+  local listen="--socket $ATOM_HID_SOCK"
+  [ -n "$ATOM_HID_PORT" ] && listen="--port $ATOM_HID_PORT"
+  if mkdir "$lock" 2>/dev/null; then
+    ( $cmd "$ATOM_HID_DIR/hid-bridge.py" $listen \
+        </dev/null >>"${TMPDIR:-/tmp}/claude-led-hid.log" 2>&1 ; rmdir "$lock" 2>/dev/null ) &
+    sleep 1   # HID デバイスを開くだけなので BLE のスキャン待ちより短い
+  fi
+}
+
 # USB シリアル送信。Atom Lite は DTR/RTS が EN/IO0 に配線されており、ポートの open/close で
 # 信号が動くとボードがリセットされる。対策として -hupcl を毎回セットして信号を固定する。
 # tty.* はキャリア待ちで固まることがあるので cu.* を使う。応答は読まない(hook は投げて終わり)
@@ -202,10 +260,18 @@ send_serial() {
 
 send_state() {
   now_ms
+  local line="led s=$1 sid=${2:-default} ts=$NOW_MS"
+  if [ -n "$ATOM_HID" ]; then
+    send_hid "$line" && return 0
+    # HOGP が落ちている(ペアリング切れ・デーモン起動失敗)ときは、設定されていれば
+    # USB シリアルに落ちる。HTTP には落ちない(既定のプレースホルダ IP に 1 秒待たされるため)
+    [ -n "$ATOM_SERIAL" ] && resolve_serial && send_serial "$line"
+    return
+  fi
   if [ -n "$ATOM_BLE" ]; then
-    send_ble "led s=$1 sid=${2:-default} ts=$NOW_MS"
+    send_ble "$line"
   elif [ -n "$ATOM_SERIAL" ]; then
-    resolve_serial && send_serial "led s=$1 sid=${2:-default} ts=$NOW_MS"
+    resolve_serial && send_serial "$line"
   else
     curl -s -m 1 --retry 2 --retry-all-errors "$ATOM_URL/led?s=$1&sid=${2:-default}&ts=$NOW_MS" >/dev/null 2>&1
   fi
@@ -248,6 +314,7 @@ state="$1"
 # 最初の実イベントより前に接続を確立させ、1 個目の取りこぼしを無くす。
 # ATOM_BLE を使っていなければ何もしない。多重起動はソケットロックで防ぐ
 if [ "$state" = "ensure-ble" ]; then
+  [ -n "$ATOM_HID" ] && ensure_hid_daemon
   [ -n "$ATOM_BLE" ] && ensure_ble_daemon
   exit 0
 fi

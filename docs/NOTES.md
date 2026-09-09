@@ -223,6 +223,67 @@ BLE はアイドルでも接続を維持できるので、送信は実測 40ms �
 led.sh は `ATOM_BLE=1` でこの経路を選び、`uv run --script ble-bridge.py` でデーモンを自動起動する
 (初回のみ macOS の Bluetooth 使用許可が要る)。デバイス再起動時はデーモンの keepalive が 5 秒間隔で張り直す。
 
+### HOGP(BLE HID)経路の追加(2026-09-09)
+
+管理 Windows 端末の MDM が `Bluetooth/ServicesAllowedList` で SIG 標準 UUID しか許可せず、
+NUS のカスタム UUID では GATT が `AccessDenied` になる(前節の「未解決」)。許可リストを実際に
+読むと **0x1812(HID over GATT)、0x180A、0x1813 が載っていた**ので、そこにコマンドチャネルを
+移して回避した。NUS は残したまま**同じ GATT サーバーに HID サービスを併設**する。
+
+キーボードとしては振る舞わない。report map を**ベンダー定義 usage page(0xFF00)**の
+Output / Input Report にしてある:
+
+- キーボードの usage を含まないので、誤ってキー入力が飛ぶ事故が原理的に起きない
+- OS はキーボード/マウスのコレクションをユーザー空間から開かせない(キーロガー対策)が、
+  ベンダー定義は開ける。この端末で既存のベンダーコレクション 6 個が管理者権限なしで
+  open できることを先に実測してから設計した
+- Output Report(host→Atom, 64B)= コマンド 1 行を NUL 埋め。`getValue().c_str()` が NUL で
+  切れる性質を使って 1 write = 1 行として扱い、NUS と同じ SPSC リングに積む
+- Input Report(Atom→host, 64B)= `[len][payload]`、`len=0` で終端。`statusBody()` は 64B に
+  収まらないので分割送出する。送るのは `status` のときだけ(毎回流すとホストのキューに
+  古い応答が溜まり、次の `status` が汚れる)
+
+実測結果:
+
+| 項目 | 結果 |
+| :--- | :--- |
+| GATT のアクセス | 通る(0x1812 は許可リストにある) |
+| ユーザー空間からの open | 成功。`3a30:7180 up=0xFF00 clawd-heartbeat`。ドライバ・管理者権限不要 |
+| NUS との同時接続 | 成功。`ble=connected n=2`(Mac の NUS + Windows の HOGP) |
+| hook のレイテンシ | **0.22 秒/イベント**。USB シリアル(0.40 秒)より速い。ポートの open/close が無いため |
+| 完全ワイヤレス | 成功。USB を抜いた状態で動作 |
+
+「HOGP にすると同時 3 接続が後退する」という懸念は、NUS を置き換えず併設したことで回避できた
+(上限 3 に対して 2 使用)。HID の characteristic だけが `ESP_GATT_PERM_*_ENCRYPTED` なので、
+HID を触るホストだけがペアリングを要求され、Mac は平文の NUS を使い続けられる。
+
+踏んだ罠:
+
+- **`BLEHIDDevice::manufacturer(std::string)` は未初期化ポインタを触る**。コンストラクタは
+  `m_manufacturerCharacteristic` を作らず、引数なしの `manufacturer()` が生成側。そのまま呼ぶと
+  `LoadProhibited` でブートループする(実測。`addr2line` で BLEHIDDevice.cpp:90 と判明)。
+  `manufacturer()->setValue(...)` が正しい。`pnp()` / `hidInfo()` / `reportMap()` は
+  コンストラクタで作られた characteristic を使うので直接呼んでよい
+- **広告は 29/31 バイト**(flags 3 + HID 16bit 4 + Appearance 4 + NUS 128bit 18)。
+  `addData` は上限超過分を黙って捨てるので、HID 側を先に積んで、溢れたときに落ちるのを
+  NUS の UUID 側にしてある(NUS が落ちても ble-bridge.py は名前で見つけられる)
+- **PnP ID のバイト順**: ライブラリが vid/pid をビッグエンディアンで書くため、
+  `pnp(0x02, 0x303A, 0x8071, ...)` はホストから `3a30:7180` と見える。表示上の問題だけで、
+  hid-bridge.py は usage page と product string で照合しているので動作に影響はない
+- **ブートループ中は診断ツールが固まる**。パニックしたデバイスは起動ログを延々流すので、
+  `led-test.sh status` の `while read -t 3` が終わらず COM ポートを掴んだまま固まった。
+  読み取り行数に上限を入れて修正済み(led-test.sh / led-demo.sh / led.sh の serial_is_atom)
+
+この端末では他に 2 つ、企業環境固有の壁があった(いずれも Mac には無い):
+
+- **TLS 検査**: 社内ルート CA が Windows 証明書ストアにはあるが `requests` の certifi には無く、
+  `pio` のパッケージ取得が `HTTPClientError`(実体は `CERTIFICATE_VERIFY_FAILED`)になる。
+  Windows のルート CA を PEM に書き出して certifi と結合し `REQUESTS_CA_BUNDLE` で渡すと通る
+- **DLP(Purview Information Protection)**: `~/.platformio` 配下の `.csv` が `.pfile` に暗号化
+  ラップされ、パーティション生成が `UnicodeDecodeError` で落ちる(20 個全滅)。書き直しても
+  数秒で再暗号化される。正本をリポジトリ外に置いて `-c` で別 ini から指す形で回避した
+  (`.h` / `.cpp` は無傷、スクラッチパッドとリポジトリ内の `.csv` は保護されない)
+
 ### Windows 対応(2026-09-07)
 
 Windows でも BLE 経路を動かせるようにした。bleak の WinRT バックエンドは Windows でそのまま動くので、

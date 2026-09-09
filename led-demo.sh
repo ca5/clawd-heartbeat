@@ -30,18 +30,23 @@ ATOM="${ATOM:-http://192.168.1.50}"
 # シリアルは open/close で DTR/RTS が動くとボードがリセットされるため -hupcl を毎回セットする
 # (led.sh と同じ対策)。応答は "state=" 行が来るまでのノイズ(古い ok 等)を読み飛ばす
 atom_send() {
-  local cmd="$1" path rest line started=0 sock port
+  local cmd="$1" path rest line started=0 sock port kind defport defsock n=0
   set -- $cmd
   path="$1"; shift
   case "$ATOM" in
-    ble|ble:*)
-      # BLE ブリッジへ 1 行送り、応答を受ける。ble:<path> で Unix ソケット、ble:<port> で
-      # loopback TCP を指定できる。無指定なら Windows は TCP(47820)、他は既定のソケット
-      sock="${ATOM#ble:}"; [ "$sock" = ble ] && sock=""; port=""
+    ble|ble:*|hid|hid:*)
+      # 常駐ブリッジへ 1 行送り、応答を受ける。BLE(ble-bridge.py)と HOGP(hid-bridge.py)は
+      # ソケットのプロトコルが同一で、既定のソケット/ポートだけが違う。
+      # <kind>:<path> で Unix ソケット、<kind>:<port> で loopback TCP を明示できる
+      case "$ATOM" in
+        hid*) kind=hid; defport=47821; defsock="${TMPDIR:-/tmp}/claude-led-hid.sock" ;;
+        *)    kind=ble; defport=47820; defsock="${TMPDIR:-/tmp}/claude-led-ble.sock" ;;
+      esac
+      sock="${ATOM#${kind}:}"; [ "$sock" = "$kind" ] && sock=""; port=""
       case "$sock" in
         '') case "$(uname -s)" in
-              MINGW*|MSYS*|CYGWIN*) port=47820 ;;
-              *) sock="${TMPDIR:-/tmp}/claude-led-ble.sock" ;;
+              MINGW*|MSYS*|CYGWIN*) port="$defport" ;;
+              *) sock="$defsock" ;;
             esac ;;
         *[!0-9]*) ;;                     # 数字以外を含む → Unix ソケットのパス
         *) port="$sock"; sock="" ;;      # 全部数字 → TCP ポート
@@ -51,9 +56,9 @@ atom_send() {
         ( printf '%s\n' "$cmd" >&3
           while IFS= read -r -t 3 line <&3; do printf '%s\n' "${line%$'\r'}"; done
         ) 3<>"/dev/tcp/127.0.0.1/$port" 2>/dev/null \
-          || { echo "BLE ブリッジが起動していません(127.0.0.1:$port)。led.sh 経由か ble-bridge.py を起動してください" >&2; return 1; }
+          || { echo "$kind ブリッジが起動していません(127.0.0.1:$port)。led.sh 経由か ${kind}-bridge.py を起動してください" >&2; return 1; }
       elif [ ! -S "$sock" ]; then
-        echo "BLE ブリッジが起動していません($sock)。led.sh 経由か ble-bridge.py を起動してください" >&2; return 1
+        echo "$kind ブリッジが起動していません($sock)。led.sh 経由か ${kind}-bridge.py を起動してください" >&2; return 1
       elif command -v nc >/dev/null 2>&1; then
         printf '%s\n' "$cmd" | nc -U -w 3 "$sock"
       else
@@ -78,7 +83,10 @@ PY
         stty raw -echo -hupcl clocal 115200 <&3 2>/dev/null || true
         printf '%s\n' "$cmd" >&3
         if [ "$path" = status ]; then
-          while IFS= read -r -t 3 line <&3; do
+          # 行数に上限を置く。パニックでブートループしているデバイスは起動ログを延々
+          # 流し続けるので、上限が無いとここで固まってポートを掴んだままになる(実測)
+          while [ "$n" -lt 200 ] && IFS= read -r -t 3 line <&3; do
+            n=$((n + 1))
             line=${line%$'\r'}
             case "$line" in state=*) started=1 ;; esac
             [ "$started" -eq 1 ] || continue

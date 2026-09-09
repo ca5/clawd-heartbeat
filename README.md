@@ -16,7 +16,7 @@ Claude Code hooks ──HTTP GET (WiFi)──────┐
                     line command (BLE)───┘
 ```
 
-Three transports, same one-line protocol. **WiFi**: the hook sends an HTTP GET — pick it when the Atom can share a network with the Mac. **USB serial**: the hook writes a line to the serial port — pick it when they can't share a network (guest WiFi with client isolation, corporate 802.1X, no DHCP reservations) and the Atom is plugged into the Mac. **BLE**: a small resident daemon (`ble-bridge.py`) holds a Bluetooth Low Energy connection and forwards the lines — pick it to keep the Atom wireless (USB power only) where WiFi won't work. All three transports are on `main` and work on macOS and Windows (Git Bash).
+Three transports, same one-line protocol. **WiFi**: the hook sends an HTTP GET — pick it when the Atom can share a network with the Mac. **USB serial**: the hook writes a line to the serial port — pick it when they can't share a network (guest WiFi with client isolation, corporate 802.1X, no DHCP reservations) and the Atom is plugged into the Mac. **BLE**: a small resident daemon (`ble-bridge.py`) holds a Bluetooth Low Energy connection and forwards the lines — pick it to keep the Atom wireless (USB power only) where WiFi won't work. **HOGP**: pair the Atom as a BLE HID device and `hid-bridge.py` sends Output Reports — the way out on a managed machine whose MDM blocks custom GATT UUIDs, since HID's 0x1812 is usually allowlisted. All four transports are on `main` and work on macOS and Windows (Git Bash).
 
 Why not Bluetooth Classic (SPP)? macOS drops an idle SPP serial link even with the port held open and needs ~2 s to reconnect on every send, so it can't back a status light. BLE keeps the connection open, so sends land in tens of milliseconds. See docs/NOTES.md.
 
@@ -99,6 +99,17 @@ uv run ble-bridge.py            # scans, connects, holds the link; grant the Blu
 ATOM=ble ./led-test.sh status   # should print state=... ble=connected
 ```
 
+**HOGP transport**: for managed machines where MDM policy blocks the custom GATT service. The firmware exposes a HID service (0x1812) alongside NUS, with a report map on a **vendor-defined usage page** — so it never behaves as a keyboard and cannot leak keystrokes. The OS HID driver owns the BLE link, so there is no reconnect or sleep-resume handling to do.
+
+```bash
+# after pairing "clawd-heartbeat" from the OS Bluetooth settings
+uv run hid-bridge.py --scan     # confirm it shows up as a vendor-defined collection
+uv run hid-bridge.py            # run it resident
+ATOM=hid ./led-test.sh status   # should print state=... hid=ready
+```
+
+Point the hook at HOGP with `ATOM_HID="1"` in `~/.claude/led.conf`; adding `ATOM_SERIAL="auto"` gives it a USB fallback if the pairing drops. NUS and HOGP can be connected at once, so a Mac on BLE and a Windows box on HOGP driving the same LED works as-is.
+
 Point the hook at BLE by putting `ATOM_BLE="1"` in `~/.claude/led.conf` (leave `ATOM_SERIAL` empty). Add `led.sh ensure-ble` to the SessionStart hook so the daemon (and its BLE connection) is up before the first event; led.sh also autostarts it on demand via `uv run --script` as a fallback:
 
 ```json
@@ -119,6 +130,7 @@ Copy [`led.sh`](led.sh) to `~/.claude/led.sh` and put the transport in `~/.claud
 ```bash
 cp led.sh ~/.claude/led.sh && chmod +x ~/.claude/led.sh
 
+echo 'ATOM_HID="1"'                    > ~/.claude/led.conf   # HOGP (BLE HID)
 echo 'ATOM_SERIAL="auto"'              > ~/.claude/led.conf   # USB serial, port auto-detected
 echo 'ATOM_BLE="1"'                    > ~/.claude/led.conf   # BLE
 echo 'ATOM_URL="http://192.168.1.50"'  > ~/.claude/led.conf   # WiFi
@@ -240,7 +252,8 @@ The device address comes from the `ATOM` environment variable or a gitignored `.
 | `pio device monitor` fails | It needs a TTY and can't run in the background; use the pyserial recipe in docs/NOTES.md |
 | Hooks fire but the LED never changes | Your transport setting is probably gone. Re-copying `~/.claude/led.sh` wipes anything edited into the file itself — keep it in `~/.claude/led.conf`. With nothing set, led.sh falls through to HTTP and curl just exits 28, silently |
 | `bad interpreter` on Windows | `core.autocrlf=true` gave the `.sh` files CRLF. `.gitattributes` pins them to `eol=lf`, so re-clone or run `git add --renormalize .` |
-| BLE reads/writes return Access Denied on Windows | A managed machine may enforce the MDM policy `Bluetooth/ServicesAllowedList`, which allowlists SIG UUIDs only: scanning and service discovery succeed while every GATT operation is denied. There is no way around it — use the serial or WiFi transport |
+| BLE reads/writes return Access Denied on Windows | A managed machine may enforce the MDM policy `Bluetooth/ServicesAllowedList`, which allowlists SIG UUIDs only: scanning and service discovery succeed while every GATT operation is denied. If 0x1812 is on that list, the **HOGP transport** gets you through; otherwise use serial or WiFi |
+| `hid-bridge.py --scan` shows nothing | The Atom isn't paired in the OS Bluetooth settings. HOGP requires encryption, so it has to bond (Just Works with no IO, so no PIN prompt) |
 | COM port disappears on Windows | Usually a broken data line in the cable — power still gets through, so the LED stays lit. If `[System.IO.Ports.SerialPort]::GetPortNames()` is empty but another USB device enumerates on the same port, replace the cable |
 
 ## Case

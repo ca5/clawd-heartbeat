@@ -40,11 +40,27 @@ description: >
 | WiFi/HTTP | 自宅など、Mac と Atom を同じ LAN に置ける。Atom を USB 電源だけで好きな場所に置きたい | 2.4GHz の SSID/パスワード、ルーターの DHCP 予約 |
 | USB シリアル | 来客用 WiFi(端末間通信の遮断)、802.1X の社内 WiFi、DHCP 予約不可など、Mac から Atom に HTTP が届かない | Atom を Mac に USB 直結しておくこと |
 | BLE | WiFi が使えず、かつ Atom を無線(USB 電源のみ)にしたい | uv(または `pip install bleak`)、初回の macOS Bluetooth 許可、常駐デーモン ble-bridge.py |
+| HOGP(BLE HID)| 管理端末で MDM が BLE のカスタム UUID を弾く。無線にもしたい | uv(または `pip install hidapi`)、OS 設定でのペアリング、常駐デーモン hid-bridge.py |
 
-**Windows の管理端末では BLE を選ばせないこと**。MDM ポリシー `Bluetooth/ServicesAllowedList`
+**Windows の管理端末では、まず MDM ポリシーを読むこと**。`Bluetooth/ServicesAllowedList`
 (`HKLM\SOFTWARE\Microsoft\PolicyManager\current\device\Bluetooth`)が SIG 標準 UUID のみを
-許可していると、スキャンとサービス探索は成功するのに GATT の read/write だけが `AccessDenied` になる。
-回避不能なので USB シリアルか WiFi を選ぶ。事前確認はこのレジストリを見るのが早い。
+許可していると、素の BLE 経路はスキャンとサービス探索だけ成功して GATT の read/write が
+`AccessDenied` になる。判断はこう:
+
+- 許可リストに **0x1812 がある** → **HOGP 経路**を選ぶ(3d 参照)。0x180A / 0x1813 も必要
+- 無い → USB シリアルか WiFi。`AllowAdvertising=0` なら advertising を使う案も塞がれている
+
+### 3d. HOGP(BLE HID)の場合
+
+1. `HID_ENABLED = true`(`main` の既定)のファームウェアを書き込む
+2. `./led-test.sh status` の `hid=ready` で HID サービスの起動を確認(シリアルか BLE 経由で)
+3. **OS の設定から `clawd-heartbeat` をペアリング**してもらう(ユーザー操作)。暗号化必須なので
+   ボンディングが走る。IO 無しの Just Works なので PIN は出ない
+4. `uv run hid-bridge.py --scan` で `up=0xFF00` のベンダー定義コレクションとして見えるか確認。
+   見えなければペアリングを疑う
+5. `uv run hid-bridge.py` で常駐起動 → `ATOM=hid ./led-test.sh status` が返ること
+6. hook は `~/.claude/led.conf` に `ATOM_HID="1"`。`ATOM_SERIAL="auto"` も併記すると
+   ペアリング切れ時に USB へ落ちる。led.sh が `uv run --script` でデーモンを自動起動する
 
 会社・共有オフィスなら最初から USB シリアルを勧める(WiFi で試してから ARP 未解決で気づくと時間を無駄にする)。
 

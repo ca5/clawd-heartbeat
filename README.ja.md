@@ -19,7 +19,9 @@ Claude Code hooks ──HTTP GET(WiFi)──────┐
 いられるとき向け。**USB シリアル**: hook がシリアルポートに 1 行書く。同じネットワークにいられず
 (端末間通信を遮断する来客用 WiFi、802.1X の社内 WiFi、DHCP 予約不可)、Atom を Mac に USB 直結できるとき向け。
 **BLE**: 常駐デーモン(`ble-bridge.py`)が BLE 接続を保持して 1 行を中継する。WiFi が使えない環境で Atom を
-無線(USB 電源のみ)にしたいとき向け。3 経路とも `main` にあり、macOS と Windows(Git Bash)で動く。
+無線(USB 電源のみ)にしたいとき向け。**HOGP**: BLE HID としてペアリングし、`hid-bridge.py` が
+Output Report で送る。会社の管理端末で MDM がカスタム GATT UUID を弾く場合の逃げ道
+(HID の 0x1812 は許可されていることが多い)。4 経路とも `main` にあり、macOS と Windows(Git Bash)で動く。
 
 Bluetooth Classic(SPP)を使わない理由: macOS はポートを開いたままでも idle で SPP のリンクを切り、
 送信ごとに約 2 秒の再接続待ちが入るため、ステータス表示には使えない。BLE は接続を保持できるので
@@ -105,6 +107,22 @@ uv run ble-bridge.py            # スキャン→接続→保持。初回の許�
 ATOM=ble ./led-test.sh status   # state=... ble=connected が出れば OK
 ```
 
+**HOGP 経路**: BLE の GATT が MDM ポリシーで塞がれている管理端末向け。ファームウェアは
+NUS と一緒に HID サービス(0x1812)も出しており、report map は**ベンダー定義 usage page**の
+Output / Input Report なので、キーボードとしては振る舞わない(キー入力が飛ぶ事故が原理的に起きない)。
+BLE リンクは OS の HID ドライバが保持するので、再接続やスリープ復帰の面倒が無い。
+
+```bash
+# OS の設定から "clawd-heartbeat" を Bluetooth デバイスとしてペアリングしてから
+uv run hid-bridge.py --scan     # ベンダー定義コレクションとして見えるか確認
+uv run hid-bridge.py            # 常駐起動
+ATOM=hid ./led-test.sh status   # state=... hid=ready が出れば OK
+```
+
+hook を HOGP にするには `~/.claude/led.conf` に `ATOM_HID="1"` を書く。`ATOM_SERIAL="auto"` も
+併記しておくと、ペアリングが切れたときに USB シリアルへ落ちる。NUS と HOGP は同時接続できるので、
+Mac は BLE、Windows は HOGP という併用もそのまま動く。
+
 hook を BLE にするには `~/.claude/led.conf` に `ATOM_BLE="1"` を書く(`ATOM_SERIAL` は空のまま)。SessionStart hook に `led.sh ensure-ble` を足すと、最初のイベントより前にデーモン(と BLE 接続)が立ち上がる。led.sh は必要時に `uv run --script` で自動起動もする(フォールバック):
 
 ```json
@@ -128,6 +146,7 @@ stderr には何も出ないので気づけない):
 ```bash
 cp led.sh ~/.claude/led.sh && chmod +x ~/.claude/led.sh
 
+echo 'ATOM_HID="1"'                > ~/.claude/led.conf   # HOGP(BLE HID)
 echo 'ATOM_SERIAL="auto"'          > ~/.claude/led.conf   # USB シリアル(ポートは自動検出)
 echo 'ATOM_BLE="1"'                > ~/.claude/led.conf   # BLE
 echo 'ATOM_URL="http://192.168.1.50"' > ~/.claude/led.conf # WiFi(固定 IP)
@@ -260,7 +279,8 @@ WiFi 接続中の表示です。点きっぱなしの場合は 2.4GHz の SSID �
 | `pio device monitor` が動かない | TTY 必須のためバックグラウンド実行不可。docs/NOTES.md の pyserial 手順を使う |
 | hook は発火しているのに LED が変わらない | 経路設定が消えていないか。`~/.claude/led.sh` を再コピーすると本体に直接書いた設定は消える(設定は `~/.claude/led.conf` に置く)。空だと HTTP 経路に落ち、curl が exit 28 を返すだけで無言に失敗する |
 | Windows で `bad interpreter` | `core.autocrlf=true` で `.sh` が CRLF になっている。`.gitattributes` で `eol=lf` に固定してあるので、clone し直すか `git add --renormalize .` |
-| Windows で BLE の read/write が Access Denied | 管理端末の MDM ポリシー `Bluetooth/ServicesAllowedList` が SIG 標準 UUID のみ許可している。スキャンとサービス探索は成功するのに GATT だけ拒否される。回避不能なので USB シリアルか WiFi を使う |
+| Windows で BLE の read/write が Access Denied | 管理端末の MDM ポリシー `Bluetooth/ServicesAllowedList` が SIG 標準 UUID のみ許可している。スキャンとサービス探索は成功するのに GATT だけ拒否される。許可リストに 0x1812 があれば **HOGP 経路**で回避できる。無ければ USB シリアルか WiFi |
+| `hid-bridge.py --scan` に出てこない | OS の設定で Atom をペアリングしていない。HOGP は暗号化必須なのでボンディングが要る(IO 無しの Just Works なので PIN は出ない) |
 | Windows で COM ポートが消える | ケーブルのデータ線の断線が多い(電源線は生きているので LED は点いたまま)。`[System.IO.Ports.SerialPort]::GetPortNames()` が空で、別の USB 機器は同じポートで認識される場合はケーブルを交換する |
 
 ## ケース
