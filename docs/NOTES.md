@@ -288,13 +288,21 @@ Atom 側が知らず、接続直後の暗号化に失敗して切られる。`ma
 `uv run hid-bridge.py --repair` を用意した(unpair → CONFIRM_ONLY の Just Works で再ペアリング。
 IO が無いので UI 操作なしに完了する)。
 
-**Atom は電源断でボンドを失う**ことが実測で確定した(電源を入れ直すたびに不一致が起きる。
-`uptime` が戻っていることで再起動を確認)。根本的には firmware 側でボンドを NVS に永続化すべきで、
-現状の `BLESecurity` は `setInitEncryptionKey` だけを設定していて `setRespEncryptionKey` が無い。
-BLE では init_key が「セントラルが配る鍵」、rsp_key が「ペリフェラルが配る鍵」なので、
-ペリフェラルであるこちらは rsp_key を設定しないと自分の鍵を配布・保存できない疑いがある(未検証)。
+**原因は `setRespEncryptionKey` の欠落だった(修正済み)**。当初「Atom が電源断でボンドを失う」と
+考えたが、`status` に `bonds=`(`esp_ble_get_bond_device_num()`)を足して観測したところ、
+**ボンドの件数は再起動をまたいで残っていた**(書き込み直後でも `bonds=2`)。永続化は元から
+効いていて、問題は保存された鍵がホスト側と一致しないことだった。
 
-それまでの回避として **hid-bridge.py が自動で復旧する**: セッションを
+`BLESecurity` が `setInitEncryptionKey` だけを設定していたのが原因。BLE では init_key が
+「セントラルが配る鍵」、rsp_key が「ペリフェラルが配る鍵」で、こちらはペリフェラルなので
+rsp_key を設定しないと自分の鍵を配布できない。ボンドの器はあるのに中身が食い違う状態になる。
+`setRespEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK)` を足したところ、
+**リセット後に再ペアリング無しでそのまま復帰する**ことを実測で確認した。
+
+「件数が残る」と「鍵が一致する」は別物で、前者だけ見て永続化が効いていると判断すると
+見誤る。`bonds=` を status に残してあるのは、次に同種の疑いが出たときに切り分けるため。
+
+保険として **hid-bridge.py が自動で復旧する**: セッションを
 掴んでもデバイスが出てこなければボンド不一致とみなして再ペアリングする(5 分のクールダウン付き。
 正常時に誤発火しないことを確認済み)。
 

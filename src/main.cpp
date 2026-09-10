@@ -223,7 +223,10 @@ String statusBody() {
     "\nrssi=" + String(httpStarted ? WiFi.RSSI() : 0) +
     "\nwifi=" + wifi +
     "\nble=" + ble +
-    "\nhid=" + String(!HID_ENABLED ? "off" : (hidInput ? "ready" : "off")) + "\n";
+    "\nhid=" + String(!HID_ENABLED ? "off" : (hidInput ? "ready" : "off")) +
+    // 保存されているボンド数。再起動しても減らないことが HOGP の安定条件(0 に戻ると
+    // ホストとの鍵が食い違い、接続直後に切られるようになる)
+    "\nbonds=" + String(bleReady ? esp_ble_get_bond_device_num() : 0) + "\n";
   for (auto& s : sessions) {
     if (!s.used || now - s.seen > staleFor(s)) continue;
     body += String("  ") + s.id + " " + STATE_NAMES[(int)s.st] +
@@ -405,6 +408,10 @@ void startBle() {
     sec->setAuthenticationMode(ESP_LE_AUTH_REQ_SC_BOND);
     sec->setCapability(ESP_IO_CAP_NONE);
     sec->setInitEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);
+    // init_key は「セントラルが配る鍵」、rsp_key は「ペリフェラルが配る鍵」。こちらは
+    // ペリフェラルなので rsp_key も設定しないと自分の鍵を配布・保存できず、電源を切ると
+    // ボンドが消える(ホストは鍵を持ち続けるので、次の接続で暗号化に失敗して切られる)
+    sec->setRespEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);
 
     BLEHIDDevice* hidDev = new BLEHIDDevice(srv);
     // manufacturer() は「生成する側」。引数付きの manufacturer(name) は characteristic を

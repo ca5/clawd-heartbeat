@@ -220,6 +220,16 @@ class Bridge:
                 pass
         self.dev = None
 
+    def _read_with_retry(self):
+        """再接続直後は read が一度こけることがある(デバイスノードが落ち着く前)。"""
+        for attempt in range(3):
+            try:
+                return self._read_response()
+            except Exception:
+                if attempt == 2:
+                    raise
+                time.sleep(0.6)
+
     def _read_response(self):
         """Input Report を GATT read して NUL 終端の本文を取り出す。"""
         data = self.dev.get_input_report(HID_REPORT_ID, HID_IN_LEN + 1)
@@ -251,25 +261,26 @@ class Bridge:
                     return f"error: {self.last_error or 'not connected'}\n"
             payload = line.encode()[:HID_OUT_LEN - 1]
             report = bytes([HID_REPORT_ID]) + payload + b"\0" * (HID_OUT_LEN - len(payload))
-            try:
-                self.dev.write(report)
-                if line.strip() == "status":
+            # Atom が再起動するとハンドルが古くなり 1 回目の write がこける。閉じて開き直せば
+            # 通るので、呼び手にエラーを返す前にその場でやり直す
+            # Atom が再起動するとハンドルが古くなって 1 回目の write がこける。閉じて開き直せば
+            # 通るので、呼び手にエラーを返す前にその場でやり直す
+            for tries_left in (1, 0):
+                try:
+                    self.dev.write(report)
+                    if line.strip() != "status":
+                        return "ok\n"
                     time.sleep(0.25)     # firmware が loop() で処理して setValue するのを待つ
-                    # 再接続直後は read が一度こけることがある(デバイスノードが落ち着く前)
-                    for attempt in range(3):
-                        try:
-                            body = self._read_response()
-                            break
-                        except Exception:
-                            if attempt == 2:
-                                raise
-                            time.sleep(0.6)
-                    return (body if body.endswith("\n") else body + "\n") if body else "error: no response\n"
-                return "ok\n"
-            except Exception as e:
-                log(f"write failed: {e}")
-                self._close()            # 次回開き直す(ペアリング切れ・スリープ復帰など)
-                return f"error: {e}\n"
+                    body = self._read_with_retry()
+                    if not body:
+                        return "error: no response\n"
+                    return body if body.endswith("\n") else body + "\n"
+                except Exception as e:
+                    log(f"write failed: {e}")
+                    self._close()        # ハンドルが古い / ペアリング切れ / スリープ復帰
+                    if not tries_left or not self._open():
+                        return f"error: {e}\n"
+            return "error: unreachable\n"
 
 
 async def handle_client(reader, writer, bridge: Bridge):
