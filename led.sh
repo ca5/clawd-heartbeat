@@ -113,12 +113,25 @@ PY
   fi
 }
 
-# デーモンが待ち受けているか。TCP は繋いでみる、Unix ソケットは存在で判定する
+# デーモンが待ち受けているか。どちらの経路も「実際に繋いでみる」で判定する。
+# Unix ソケットを存在(`[ -S ]`)だけで判定してはいけない: デーモンが後片付けせずに
+# 死ぬと接続を拒否する残骸ファイルが残り(`[ -S ]` は真、connect は ECONNREFUSED)、
+# それを生存と誤判定すると ensure_*_daemon が二度と起動せず、LED が黙ったまま復旧しない。
+# 残骸の削除は不要。デーモンが bind の前に自分で unlink する
 sock_alive() {
   if [ -n "$2" ]; then
     ( : ) 2>/dev/null 3<>"/dev/tcp/127.0.0.1/$2"
   else
-    [ -S "$1" ]
+    [ -S "$1" ] || return 1
+    # bash は AF_UNIX に繋げない(`/dev/tcp` は TCP 専用)ので python で繋いで確かめる。
+    # macOS の nc は `-U -z` を併用すると生きているソケットでも失敗するため使えない(実測)。
+    # python が無い環境では存在チェック止まり = 従来の挙動に落とす
+    command -v "$ATOM_BLE_PYTHON" >/dev/null 2>&1 || return 0
+    "$ATOM_BLE_PYTHON" - "$1" <<'PY' >/dev/null 2>&1
+import socket, sys
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.settimeout(1)
+s.connect(sys.argv[1]); s.close()
+PY
   fi
 }
 

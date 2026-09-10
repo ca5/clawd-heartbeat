@@ -66,11 +66,21 @@ PY
   fi
 }
 
+# 実際に繋いで判定する。存在(`[ -S ]`)だけで判定すると、後片付けせずに死んだデーモンの
+# 残骸ソケットを生存と誤判定して ensure_ble_daemon が二度と起動しない(led.sh と同じ理由)
 ble_alive() {
   if [ -n "$ATOM_BLE_PORT" ]; then
     ( : ) 2>/dev/null 3<>"/dev/tcp/127.0.0.1/$ATOM_BLE_PORT"
   else
-    [ -S "$ATOM_BLE_SOCK" ]
+    [ -S "$ATOM_BLE_SOCK" ] || return 1
+    # nc は使わない(macOS の nc は `-U -z` で生きているソケットでも失敗する)。
+    # python が無ければ存在チェック止まり = 従来の挙動
+    command -v "$ATOM_BLE_PYTHON" >/dev/null 2>&1 || return 0
+    "$ATOM_BLE_PYTHON" - "$ATOM_BLE_SOCK" <<'PY' >/dev/null 2>&1
+import socket, sys
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.settimeout(1)
+s.connect(sys.argv[1]); s.close()
+PY
   fi
 }
 
