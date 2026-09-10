@@ -17,11 +17,10 @@
 違いは BLE の**接続とデータ転送を OS の HID スタックに任せる**こと: 再接続・ペアリング・
 GATT の詳細はドライバ側が持ち、このプロセスは「ソケット → Output Report」を中継する。
 
-ただし **Windows はリンクを勝手には保持してくれない**(実測)。入力トラフィックの無い
-ベンダー定義 HID はアイドルで切られ、ボンドは残るのにリンクだけ落ちる(デバイスは広告を
-出し続けているのに `connection_status=0`、HID コレクションも消える)。そのため Windows では
-`maintain_connection` の GattSession を掴んでリンクを上げたままにする。掴んでいる間だけ
-接続が維持され、離すと即座に切れる。
+リンクの維持自体は OS がやってくれる(ボンドが健全なら、こちらが何も掴まなくても
+つながったままになる)。Windows で `maintain_connection` の GattSession を掴むのは、
+**落ちているリンクを能動的に上げる**ためと、それでもデバイスが出てこないことを
+ボンド不一致の判定材料にするため。
 
 なぜ HID なのか: 会社の管理端末では MDM ポリシー `Bluetooth/ServicesAllowedList` が
 SIG 標準 UUID しか許可しておらず、NUS のカスタム UUID では GATT の read/write が
