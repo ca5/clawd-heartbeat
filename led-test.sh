@@ -17,21 +17,70 @@ if [ -z "${ATOM:-}" ] && [ -f "$here/.atom-ip" ]; then
 fi
 ATOM="${ATOM:-http://192.168.1.50}"
 
+# ATOM=auto: 実在するシリアル候補から探す(Windows は差し直しで COM 番号が変わるため)。
+# 候補が 1 本ならそのまま、複数なら status に state= を返したものを採用する
+if [ "$ATOM" = auto ]; then
+  cands=()
+  for p in /dev/ttyS* /dev/cu.usbserial-* /dev/cu.wchusbserial* /dev/cu.SLAB_USBtoUART* /dev/cu.usbmodem*; do
+    [ -c "$p" ] && cands+=("$p")
+  done
+  if [ "${#cands[@]}" -eq 0 ]; then
+    echo "シリアルポートが 1 本も見つかりません(USB が抜けていませんか)" >&2; exit 1
+  elif [ "${#cands[@]}" -eq 1 ]; then
+    ATOM="${cands[0]}"
+  else
+    ATOM=""
+    for p in "${cands[@]}"; do
+      # exit を使うので必ず subshell。{ } だとスクリプト全体が終わってしまう
+      if ( stty raw -echo -hupcl clocal 115200 <&3 2>/dev/null || true
+           printf 'status\n' >&3
+           found=1
+           while IFS= read -r -t 1 line <&3; do
+             case "${line%$'\r'}" in state=*) found=0; break ;; esac
+           done
+           exit "$found" ) 2>/dev/null 3<>"$p"; then ATOM="$p"; break; fi
+    done
+    [ -n "$ATOM" ] || { echo "候補はあるが Clawd Heartbeat が応答しません: ${cands[*]}" >&2; exit 1; }
+  fi
+  echo "auto: $ATOM を使います" >&2
+fi
+
 # コマンド送信の抽象化。引数はシリアル形式で渡し、HTTP のときは URL に変換する:
 #   atom_send "led s=idle sid=demo"  →  シリアル: そのまま 1 行 / HTTP: /led?s=idle&sid=demo
 #   atom_send status                 →  シリアル: 応答を空行まで読む / HTTP: GET /
 # シリアルは open/close で DTR/RTS が動くとボードがリセットされるため -hupcl を毎回セットする
 # (led.sh と同じ対策)。応答は "state=" 行が来るまでのノイズ(古い ok 等)を読み飛ばす
 atom_send() {
-  local cmd="$1" path rest line started=0 sock
+  local cmd="$1" path rest line started=0 sock port kind defport defsock n=0
   set -- $cmd
   path="$1"; shift
   case "$ATOM" in
-    ble|ble:*)
-      # BLE ブリッジのソケットへ 1 行送り、応答を受ける。ソケットのパスは ble:<path> で指定可(既定あり)
-      sock="${ATOM#ble:}"; [ "$sock" = ble ] && sock="${TMPDIR:-/tmp}/claude-led-ble.sock"
-      [ -S "$sock" ] || { echo "BLE ブリッジが起動していません($sock)。led.sh 経由か ble-bridge.py を起動してください" >&2; return 1; }
-      if command -v nc >/dev/null 2>&1; then
+    ble|ble:*|hid|hid:*)
+      # 常駐ブリッジへ 1 行送り、応答を受ける。BLE(ble-bridge.py)と HOGP(hid-bridge.py)は
+      # ソケットのプロトコルが同一で、既定のソケット/ポートだけが違う。
+      # <kind>:<path> で Unix ソケット、<kind>:<port> で loopback TCP を明示できる
+      case "$ATOM" in
+        hid*) kind=hid; defport=47821; defsock="${TMPDIR:-/tmp}/claude-led-hid.sock" ;;
+        *)    kind=ble; defport=47820; defsock="${TMPDIR:-/tmp}/claude-led-ble.sock" ;;
+      esac
+      sock="${ATOM#${kind}:}"; [ "$sock" = "$kind" ] && sock=""; port=""
+      case "$sock" in
+        '') case "$(uname -s)" in
+              MINGW*|MSYS*|CYGWIN*) port="$defport" ;;
+              *) sock="$defsock" ;;
+            esac ;;
+        *[!0-9]*) ;;                     # 数字以外を含む → Unix ソケットのパス
+        *) port="$sock"; sock="" ;;      # 全部数字 → TCP ポート
+      esac
+      if [ -n "$port" ]; then
+        # Windows には Unix ソケットが無いので bash の /dev/tcp で loopback に繋ぐ
+        ( printf '%s\n' "$cmd" >&3
+          while IFS= read -r -t 3 line <&3; do printf '%s\n' "${line%$'\r'}"; done
+        ) 2>/dev/null 3<>"/dev/tcp/127.0.0.1/$port" \
+          || { echo "$kind ブリッジが起動していません(127.0.0.1:$port)。led.sh 経由か ${kind}-bridge.py を起動してください" >&2; return 1; }
+      elif [ ! -S "$sock" ]; then
+        echo "$kind ブリッジが起動していません($sock)。led.sh 経由か ${kind}-bridge.py を起動してください" >&2; return 1
+      elif command -v nc >/dev/null 2>&1; then
         printf '%s\n' "$cmd" | nc -U -w 3 "$sock"
       else
         python3 - "$sock" "$cmd" <<'PY'
@@ -50,10 +99,15 @@ PY
     /dev/*)
       [ -c "$ATOM" ] || { echo "シリアルポートが見つかりません: $ATOM" >&2; return 1; }
       {
-        stty raw -echo -hupcl clocal 115200 <&3 2>/dev/null
+        # MSYS の COM ポートでは raw/-echo/速度をまとめて設定できず stty が非 0 を返す(適用できる分は
+        # 適用される。-hupcl 単体は成功し、実測でもボードはリセットされない)。set -e 下で落ちないよう許容する
+        stty raw -echo -hupcl clocal 115200 <&3 2>/dev/null || true
         printf '%s\n' "$cmd" >&3
         if [ "$path" = status ]; then
-          while IFS= read -r -t 3 line <&3; do
+          # 行数に上限を置く。パニックでブートループしているデバイスは起動ログを延々
+          # 流し続けるので、上限が無いとここで固まってポートを掴んだままになる(実測)
+          while [ "$n" -lt 200 ] && IFS= read -r -t 3 line <&3; do
+            n=$((n + 1))
             line=${line%$'\r'}
             case "$line" in state=*) started=1 ;; esac
             [ "$started" -eq 1 ] || continue

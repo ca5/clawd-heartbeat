@@ -4,6 +4,8 @@
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
+#include <BLEHIDDevice.h>
+#include <BLESecurity.h>
 #include <FastLED.h>
 
 // ---- ユーザー設定 ----
@@ -11,6 +13,7 @@
 const char* HOSTNAME  = "atom";
 const bool  BLE_ENABLED = true;     // BLE(Bluetooth Low Energy)で受け付ける。Mac 側は常駐デーモン(ble-bridge.py)が接続を保持する
 const char* BLE_NAME    = "clawd-heartbeat";
+const bool  HID_ENABLED = true;     // HOGP(BLE HID)でも受け付ける。MDM が NUS のカスタム UUID を弾く端末向け
 const uint8_t BRIGHTNESS = 255;     // ケース(拡散シェード)前提で最大。裸運用なら 30〜50 に戻す
 // ----------------------
 
@@ -20,6 +23,42 @@ const uint8_t BRIGHTNESS = 255;     // ケース(拡散シェード)前提で最
 #define BLE_SERVICE_UUID "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
 #define BLE_RX_UUID      "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
 #define BLE_TX_UUID      "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
+
+// HOGP(HID over GATT、サービス UUID 0x1812)。会社の管理端末では MDM ポリシー
+// Bluetooth/ServicesAllowedList が SIG 標準 UUID しか許可せず、NUS のカスタム UUID では
+// GATT の read/write が AccessDenied になる(スキャンとサービス探索だけは成功するので気づきにくい)。
+// 0x1812 は許可リストに載っているので、そこにコマンドチャネルを載せる。
+//
+// キーボードとしては振る舞わない。report map を **ベンダー定義 usage page(0xFF00)** の
+// Output Report にしてあるので:
+//   - キーボードの usage を含まないため、誤ってキー入力が飛ぶ事故が原理的に起きない
+//   - OS はキーボード/マウスのコレクションをユーザー空間から開かせない(キーロガー対策)が、
+//     ベンダー定義コレクションは開ける。ドライバ不要・管理者権限不要
+// NUS とは共存する。受信リングと handleLine は共用なので、状態集約は経路を問わず 1 本。
+#define HID_REPORT_ID  1
+#define HID_OUT_LEN    64                 // host → Atom(コマンド 1 行。短いので小さく保つ)
+#define HID_IN_LEN     512                // Atom → host(statusBody を丸ごと。GATT の属性長上限)
+
+static const uint8_t hidReportMap[] = {
+  0x06, 0x00, 0xFF,                       // Usage Page (Vendor Defined 0xFF00)
+  0x09, 0x01,                             // Usage (0x01)
+  0xA1, 0x01,                             // Collection (Application)
+  0x85, HID_REPORT_ID,                    //   Report ID
+  0x09, 0x02,                             //   Usage (0x02) — Output: コマンド 1 行(NUL 埋め)
+  0x15, 0x00,                             //   Logical Minimum (0)
+  0x26, 0xFF, 0x00,                       //   Logical Maximum (255)
+  0x75, 0x08,                             //   Report Size (8 bit)
+  0x95, HID_OUT_LEN,                      //   Report Count (64)
+  0x91, 0x02,                             //   Output (Data,Var,Abs)
+  0x09, 0x03,                             //   Usage (0x03) — Input: 応答(NUL 終端の本文)
+  0x15, 0x00,
+  0x26, 0xFF, 0x00,
+  0x75, 0x08,
+  0x96, (uint8_t)(HID_IN_LEN & 0xFF),     //   Report Count (512。256 以上は 0x96 の 2 バイト形式)
+        (uint8_t)(HID_IN_LEN >> 8),
+  0x81, 0x02,                             //   Input (Data,Var,Abs)
+  0xC0                                    // End Collection
+};
 
 #define LED_PIN 27
 #define BTN_PIN 39                        // 本体前面ボタン(押下で LOW)
@@ -51,6 +90,7 @@ unsigned long bootMs = 0;
 unsigned long wifiAttemptMs = 0;  // 最後に WiFi.begin() した時刻(間欠再接続用)
 
 BLECharacteristic* txChar = nullptr;   // Atom → Mac(read / notify)
+BLECharacteristic* hidInput = nullptr; // Atom → host(HID Input Report)。HOGP 経路の応答用
 
 // BLE 受信リング(単一生産者=BLE タスク / 単一消費者=loop の SPSC。ロック不要)
 volatile uint8_t bleRing[BLE_RX_RING];
@@ -182,7 +222,11 @@ String statusBody() {
     "\nuptime=" + String(now / 1000) + "s" +
     "\nrssi=" + String(httpStarted ? WiFi.RSSI() : 0) +
     "\nwifi=" + wifi +
-    "\nble=" + ble + "\n";
+    "\nble=" + ble +
+    "\nhid=" + String(!HID_ENABLED ? "off" : (hidInput ? "ready" : "off")) +
+    // 保存されているボンド数。再起動しても減らないことが HOGP の安定条件(0 に戻ると
+    // ホストとの鍵が食い違い、接続直後に切られるようになる)
+    "\nbonds=" + String(bleReady ? esp_ble_get_bond_device_num() : 0) + "\n";
   for (auto& s : sessions) {
     if (!s.used || now - s.seen > staleFor(s)) continue;
     body += String("  ") + s.id + " " + STATE_NAMES[(int)s.st] +
@@ -296,6 +340,38 @@ class RxCallbacks : public BLECharacteristicCallbacks {
   }
 };
 
+// HID の Output Report(host → Atom)。固定長で 0 埋めされて届くので、c_str() が NUL で
+// 自然に切れるのを利用して 1 write = 1 行として扱う。NUS の RxCallbacks と同じリングに積む
+class HidOutputCallbacks : public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic* c) override {
+    String v = c->getValue().c_str();
+    for (size_t i = 0; i < v.length() && i < HID_OUT_LEN; i++) {
+      size_t next = (bleHead + 1) % BLE_RX_RING;
+      if (next == bleTail) return;    // 満杯なら以降を捨てる
+      bleRing[bleHead] = (uint8_t)v[i];
+      bleHead = next;
+    }
+    size_t next = (bleHead + 1) % BLE_RX_RING;   // pollBle に行の切れ目を教える
+    if (next != bleTail) { bleRing[bleHead] = '\n'; bleHead = next; }
+  }
+};
+
+// 応答を Input Report に丸ごと載せる(NUL 終端)。ホストは GATT read
+// (Windows なら HidD_GetInputReport)で取る。
+// 当初は [len][payload] の分割 + notify にしていたが、read で取れるのは「最後に setValue した値」
+// = 終端レポートだけになり、しかも notify の購読は BLE リンクが張り直されると黙って失われる
+// (実測)。read を正とする設計に変えて分割をやめた。notify は 512B を載せられない(MTU-3 が上限)
+// ので撃たない
+void hidSendResponse(const String& body) {
+  if (!hidInput) return;
+  static uint8_t buf[HID_IN_LEN];        // 512B をスタックに置かない
+  size_t n = body.length();
+  if (n > HID_IN_LEN - 1) n = HID_IN_LEN - 1;   // 溢れたら切る(診断用なので許容)
+  memcpy(buf, body.c_str(), n);
+  memset(buf + n, 0, HID_IN_LEN - n);
+  hidInput->setValue(buf, HID_IN_LEN);
+}
+
 class ServerCallbacks : public BLEServerCallbacks {
   void onConnect(BLEServer* s) override {
     if (bleConns < BLE_MAX_CONN) bleConns++;
@@ -323,11 +399,44 @@ void startBle() {
   txChar->setValue(statusBody().c_str());
 
   svc->start();
+
+  if (HID_ENABLED) {
+    // HOGP の report characteristic は BLEHIDDevice が ESP_GATT_PERM_*_ENCRYPTED で作るため、
+    // HID を触るホストとは必ずペアリング(暗号化)する。IO が無いので Just Works。
+    // NUS 側の characteristic は権限を変えていないので、Mac は今までどおり平文で使える
+    BLESecurity* sec = new BLESecurity();
+    sec->setAuthenticationMode(ESP_LE_AUTH_REQ_SC_BOND);
+    sec->setCapability(ESP_IO_CAP_NONE);
+    sec->setInitEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);
+    // init_key は「セントラルが配る鍵」、rsp_key は「ペリフェラルが配る鍵」。こちらは
+    // ペリフェラルなので rsp_key も設定しないと自分の鍵を配布・保存できず、電源を切ると
+    // ボンドが消える(ホストは鍵を持ち続けるので、次の接続で暗号化に失敗して切られる)
+    sec->setRespEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);
+
+    BLEHIDDevice* hidDev = new BLEHIDDevice(srv);
+    // manufacturer() は「生成する側」。引数付きの manufacturer(name) は characteristic を
+    // 作らずに未初期化ポインタを触るので、そのまま呼ぶと LoadProhibited で落ちる(実測)
+    hidDev->manufacturer()->setValue("clawd-heartbeat");
+    hidDev->pnp(0x02, 0x303A, 0x8071, 0x0100);  // sig=0x02(USB IF) / Espressif の VID
+    hidDev->hidInfo(0x00, 0x02);                // country=0, flags=NormallyConnectable
+    hidDev->reportMap((uint8_t*)hidReportMap, sizeof(hidReportMap));
+    hidInput = hidDev->inputReport(HID_REPORT_ID);
+    hidDev->outputReport(HID_REPORT_ID)->setCallbacks(new HidOutputCallbacks());
+    hidDev->startServices();
+  }
+
   // BLE の広告は 31 バイト上限。128bit UUID(18B)+ 名前(17B)を両方メイン広告に載せると
-  // 溢れて広告設定ごと失敗し、何も見えなくなる(実測)。UUID をメイン広告、名前をスキャン応答に分ける
+  // 溢れて広告設定ごと失敗し、何も見えなくなる(実測)。UUID をメイン広告、名前をスキャン応答に分ける。
+  // HID を足しても収まる: flags 3B + HID 16bit 4B + Appearance 4B + NUS 128bit 18B = 29B。
+  // HID 側を先に積むのは、将来何か足して溢れたときに落ちるのを NUS の UUID 側にするため
+  // (addData は上限超過分を黙って捨てる)。NUS が落ちても ble-bridge.py は名前で見つけられる
   BLEAdvertising* adv = BLEDevice::getAdvertising();
   BLEAdvertisementData advData;
   advData.setFlags(0x06);                       // LE General Discoverable + BR/EDR 非対応
+  if (HID_ENABLED) {
+    advData.setCompleteServices(BLEUUID((uint16_t)0x1812));
+    advData.setAppearance(GENERIC_HID);         // キーボードを偽称しない(0x03C0)
+  }
   advData.setCompleteServices(BLEUUID(BLE_SERVICE_UUID));
   adv->setAdvertisementData(advData);
   BLEAdvertisementData scanResp;
@@ -347,11 +456,15 @@ void pollBle() {
     if (c == '\n' || c == '\r') {
       if (r.len > 0 && !r.overflow) {
         r.buf[r.len] = 0;
-        String resp = handleLine(String(r.buf));
+        String line = String(r.buf);
+        String resp = handleLine(line);
         if (txChar && resp.length()) {        // 応答は TX に載せる(read で取れる。購読時は notify)
           txChar->setValue(resp.c_str());
           if (bleConns > 0) txChar->notify();
         }
+        // HID 側は status のときだけ返す。毎回流すとホストのキューに古い応答が溜まり、
+        // 次の status が汚れる(hid-bridge.py 側でも読む前に drain しているが二重の保険)
+        if (resp.length() && line.startsWith("status")) hidSendResponse(resp);
       }
       r.len = 0;
       r.overflow = false;

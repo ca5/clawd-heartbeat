@@ -223,6 +223,247 @@ BLE はアイドルでも接続を維持できるので、送信は実測 40ms �
 led.sh は `ATOM_BLE=1` でこの経路を選び、`uv run --script ble-bridge.py` でデーモンを自動起動する
 (初回のみ macOS の Bluetooth 使用許可が要る)。デバイス再起動時はデーモンの keepalive が 5 秒間隔で張り直す。
 
+### 端末の役割分担: 焼く端末とつなぐ端末(2026-09-09)
+
+混同しやすいので明記する。**ファームウェアはどこか 1 台で焼けば済む**。デバイスに書き込まれた
+あとは、LED をつなぐ端末が何台増えても再ビルドは要らない。
+
+- **焼く端末**: PlatformIO + ツールチェーンが必要。TLS 検査下では初回取得に CA の対処が要る(後述)
+- **つなぐ端末**: `led.sh` / `~/.claude/led.conf` / ブリッジスクリプト(`hid-bridge.py` か
+  `ble-bridge.py`)/ uv(または pip)だけ。**PlatformIO は不要なので CA の問題も踏まない**
+
+実例として、HOGP 対応の書き込みは Windows から行い、Mac は書き込まずに BLE でつないだ
+(それまでの書き込みは Mac から行っていた)。どちらの端末が焼いてもよい。
+2 台目以降を足す作業は README の「2. hook 設定」から始められる。
+
+### HOGP(BLE HID)経路の追加(2026-09-09)
+
+管理 Windows 端末の MDM が `Bluetooth/ServicesAllowedList` で SIG 標準 UUID しか許可せず、
+NUS のカスタム UUID では GATT が `AccessDenied` になる(前節の「未解決」)。許可リストを実際に
+読むと **0x1812(HID over GATT)、0x180A、0x1813 が載っていた**ので、そこにコマンドチャネルを
+移して回避した。NUS は残したまま**同じ GATT サーバーに HID サービスを併設**する。
+
+キーボードとしては振る舞わない。report map を**ベンダー定義 usage page(0xFF00)**の
+Output / Input Report にしてある:
+
+- キーボードの usage を含まないので、誤ってキー入力が飛ぶ事故が原理的に起きない
+- OS はキーボード/マウスのコレクションをユーザー空間から開かせない(キーロガー対策)が、
+  ベンダー定義は開ける。この端末で既存のベンダーコレクション 6 個が管理者権限なしで
+  open できることを先に実測してから設計した
+- Output Report(host→Atom, 64B)= コマンド 1 行を NUL 埋め。`getValue().c_str()` が NUL で
+  切れる性質を使って 1 write = 1 行として扱い、NUS と同じ SPSC リングに積む
+- Input Report(Atom→host, 512B)= 本文を NUL 終端で丸ごと。**ホストは notify ではなく
+  GATT read**(Windows は `HidD_GetInputReport`)で取る。Output は 64B のまま(コマンドは短く、
+  無駄に長いと BLE の long write になる)。Report Count が 256 以上なので `0x95` の 1 バイト形式では
+  表現できず `0x96` の 2 バイト形式を使う
+
+**当初 notify + 分割送出にして失敗した**。`[len][payload]` を複数レポートに分けて notify する
+設計だったが、2 つの理由で破綻した:
+
+1. **read で取れるのは「最後に setValue した値」だけ**。分割すると終端レポート(`len=0`)しか
+   読めない。実測で `get_input_report` が 65B 返すのに中身が全ゼロで気づいた
+2. **notify の購読は BLE リンクが張り直されると黙って失われる**。しばらく動いていた `status` が
+   ある時点から `error: no response` になり、`connection_status=1`(CONNECTED)・広告も正常・
+   書き込みも届く(LED は変化する)のに応答だけ来ない状態になった
+
+教訓: **HOGP で host ← device の応答を取るなら read を正とする**。notify は購読状態に依存し、
+その状態を host 側から確認する手段が無い。read なら購読と無関係に必ず取れる。
+分割をやめたことでファームウェアもブリッジも短くなった
+
+**リンクの維持は OS がやってくれる(2026-09-10、一度誤診してから訂正)**。当初
+「入力トラフィックの無いベンダー定義 HID は Windows がアイドルで切る」と結論し、
+`maintain_connection` の `GattSession` を掴み続ける対策を入れたが、**これは誤診だった**。
+根拠にしていた「セッションを離すと即 DISCONNECTED」「リンクが上がらない」という観測は、
+すべて後述のボンド不一致が起きている最中のもので、Windows が接続 → 暗号化失敗 → 切断を
+繰り返していただけだった。ボンドを直したあとに検証すると、**セッションを一切掴まなくても
+リンクは UP のまま、HID コレクションも見えたまま**だった。
+
+`GattSession` を掴む処理は残してあるが、役割は「落ちているリンクを能動的に上げる」ことと、
+後述の自動復旧の判定材料であって、「切られるのを防ぐ」ためではない。
+
+**Atom の再起動でボンドが食い違う**。症状は特徴的で、**2 秒ごとに接続と切断を繰り返す**
+(`link=UP` → 2 秒後 `link=down` を延々。60 秒で 4 往復を実測)。Windows が保存した LTK を
+Atom 側が知らず、接続直後の暗号化に失敗して切られる。`maintain_connection` を立てていても
+無関係に切れるので、セッションの問題と紛らわしい。復旧はペアリングのやり直しで、
+`uv run hid-bridge.py --repair` を用意した(unpair → CONFIRM_ONLY の Just Works で再ペアリング。
+IO が無いので UI 操作なしに完了する)。
+
+**原因は `setRespEncryptionKey` の欠落だった(修正済み)**。当初「Atom が電源断でボンドを失う」と
+考えたが、`status` に `bonds=`(`esp_ble_get_bond_device_num()`)を足して観測したところ、
+**ボンドの件数は再起動をまたいで残っていた**(書き込み直後でも `bonds=2`)。永続化は元から
+効いていて、問題は保存された鍵がホスト側と一致しないことだった。
+
+`BLESecurity` が `setInitEncryptionKey` だけを設定していたのが原因。BLE では init_key が
+「セントラルが配る鍵」、rsp_key が「ペリフェラルが配る鍵」で、こちらはペリフェラルなので
+rsp_key を設定しないと自分の鍵を配布できない。ボンドの器はあるのに中身が食い違う状態になる。
+`setRespEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK)` を足したところ、
+**リセット後に再ペアリング無しでそのまま復帰する**ことを実測で確認した。
+
+「件数が残る」と「鍵が一致する」は別物で、前者だけ見て永続化が効いていると判断すると
+見誤る。`bonds=` を status に残してあるのは、次に同種の疑いが出たときに切り分けるため。
+
+保険として **hid-bridge.py が自動で復旧する**: セッションを
+掴んでもデバイスが出てこなければボンド不一致とみなして再ペアリングする(5 分のクールダウン付き。
+正常時に誤発火しないことを確認済み)。
+
+ついでに見つかった 2 件(どちらも hook の実害あり):
+
+- **`2>/dev/null` を `3<>` より前に置く規則を TCP 側に適用し忘れていた**。デーモンが落ちていると
+  `led.sh: connect: Connection refused` が hook の stderr に漏れる。シリアル側では既に守っていた
+  規則で、CLAUDE.md にも書いてあったのに TCP の 6 箇所で抜けていた
+- **自動起動したデーモンが hook の stdout/stderr パイプを掴んだままになる**。リダイレクトを
+  デーモンのコマンドにだけ掛けていたため、サブシェルは親の fd を保持し続け、hook の出力を
+  読む側が EOF を待って固まる(実測で 300 秒たっても終わらなかった)。リダイレクトは
+  `( ... ) </dev/null >>log 2>&1 &` のようにサブシェル自体に掛ける
+
+実測結果:
+
+| 項目 | 結果 |
+| :--- | :--- |
+| GATT のアクセス | 通る(0x1812 は許可リストにある) |
+| ユーザー空間からの open | 成功。`3a30:7180 up=0xFF00 clawd-heartbeat`。ドライバ・管理者権限不要 |
+| NUS との同時接続 | 成功。`ble=connected n=2`(Mac の NUS + Windows の HOGP) |
+| hook のレイテンシ | **0.19〜0.22 秒/イベント**。USB シリアル(0.40 秒)より速い。ポートの open/close が無いため |
+| 完全ワイヤレス | 成功。USB を抜いた状態で動作 |
+
+「HOGP にすると同時 3 接続が後退する」という懸念は、NUS を置き換えず併設したことで回避できた
+(上限 3 に対して 2 使用)。HID の characteristic だけが `ESP_GATT_PERM_*_ENCRYPTED` なので、
+HID を触るホストだけがペアリングを要求され、Mac は平文の NUS を使い続けられる。
+
+踏んだ罠:
+
+- **`BLEHIDDevice::manufacturer(std::string)` は未初期化ポインタを触る**。コンストラクタは
+  `m_manufacturerCharacteristic` を作らず、引数なしの `manufacturer()` が生成側。そのまま呼ぶと
+  `LoadProhibited` でブートループする(実測。`addr2line` で BLEHIDDevice.cpp:90 と判明)。
+  `manufacturer()->setValue(...)` が正しい。`pnp()` / `hidInfo()` / `reportMap()` は
+  コンストラクタで作られた characteristic を使うので直接呼んでよい
+- **広告は 29/31 バイト**(flags 3 + HID 16bit 4 + Appearance 4 + NUS 128bit 18)。
+  `addData` は上限超過分を黙って捨てるので、HID 側を先に積んで、溢れたときに落ちるのを
+  NUS の UUID 側にしてある(NUS が落ちても ble-bridge.py は名前で見つけられる)
+- **PnP ID のバイト順**: ライブラリが vid/pid をビッグエンディアンで書くため、
+  `pnp(0x02, 0x303A, 0x8071, ...)` はホストから `3a30:7180` と見える。表示上の問題だけで、
+  hid-bridge.py は usage page と product string で照合しているので動作に影響はない
+- **led.sh がデーモンのエラーを見ていなかった**。`sock_write` は応答を 1 行読むだけで内容を
+  見ておらず、デーモンが `error: ...` を返しても成功扱いになり、USB シリアルへのフォールバックが
+  働かなかった。`error:` で始まる応答は失敗として扱うように修正(応答なし=タイムアウトは
+  投げっぱなしとして成功のまま)
+- **ブートループ中は診断ツールが固まる**。パニックしたデバイスは起動ログを延々流すので、
+  `led-test.sh status` の `while read -t 3` が終わらず COM ポートを掴んだまま固まった。
+  読み取り行数に上限を入れて修正済み(led-test.sh / led-demo.sh / led.sh の serial_is_atom)
+
+この端末では他に 2 つ、企業環境固有の壁があった(いずれも Mac には無い):
+
+- **TLS 検査**: 社内ルート CA が Windows 証明書ストアにはあるが `requests` の certifi には無く、
+  `pio` のパッケージ取得が `HTTPClientError`(実体は `CERTIFICATE_VERIFY_FAILED`)になる。
+  Windows のルート CA を PEM に書き出して certifi と結合し `REQUESTS_CA_BUNDLE` で渡すと通る。
+  **必要なのは初回のパッケージ取得だけ**で、導入後の通常ビルドは CA 無しで通る(実測 7.7 秒で成功)。
+  再度必要になるのは platform のバージョン変更・`~/.platformio` の削除・`lib_deps` の追加など、
+  再取得が走るとき。`uv` は rustls で OS の証明書ストアを見るため影響を受けない
+  (hidapi / bleak / pyserial はいずれも素で取得できた)
+- **DLP(Purview Information Protection)**: `~/.platformio` 配下の `.csv` が `.pfile` に暗号化
+  ラップされ、パーティション生成が `UnicodeDecodeError` で落ちる(20 個全滅)。書き直しても
+  数秒で再暗号化される。正本をリポジトリ外に置いて `-c` で別 ini から指す形で回避した
+  (`.h` / `.cpp` は無傷、スクラッチパッドとリポジトリ内の `.csv` は保護されない)
+
+### 常駐デーモンの生存判定は実接続で行う(2026-09-10)
+
+`led.sh` の `sock_alive` と `atom-antigravity.sh` の `ble_alive` が、Unix ソケットを
+`[ -S ]` の存在チェックだけで見ていた。デーモンが後片付けせずに死ぬと**接続を拒否する
+残骸ソケットがファイルとして残る**ため、これを「生きている」と誤判定する。すると
+`ensure_*_daemon` は先頭の `ble_alive && return 0` で抜けてしまい、**デーモンが二度と
+起動しない**。`ble_write` 側は失敗するので LED は黙るが、hook は何のエラーも出さないので
+気づけない(`led.sh` の終了コードも 0 のまま)。
+
+確認したこと: `pkill` 後に残ったソケットファイルは `[ -S ]` が真を返す一方、connect は
+`ConnectionRefused` になる。TCP 経路(Windows)は元から `/dev/tcp` で繋いで判定していたため
+影響を受けず、この穴は Unix ソケット側だけにあった。
+
+判定を python の `AF_UNIX` connect に変えた。**`nc` は使えない**: macOS の `nc` は `-z`
+(Zero-I/O)を持っているのに `-U` と併用すると、**生きているソケットに対しても非 0 で返る**
+(実測。生存中のデーモンを `dead` と判定した)。これに気づかず `nc -U -z` を採用すると、
+生きているデーモンを毎回「死んでいる」と誤判定して二重起動を招く — 直そうとした不具合より悪化する。
+bash は `/dev/tcp` が TCP 専用で AF_UNIX に繋げないため、ここだけは python(1 プロセス)を使う。
+`$ATOM_BLE_PYTHON` が見つからない環境では存在チェック止まり(= 従来の挙動)に落とす。
+`sock_alive` を抽出した harness での実測は、生きているデーモン = alive、残骸ソケット = dead、
+存在しないパス = dead。**残骸の削除はシェル側では行わない**: `ble-bridge.py` /
+`hid-bridge.py` が bind の前に自分で `os.unlink` するので、判定さえ正しければデーモンの
+起動で自動的に片付く。シェルが消すと、判定と起動の間に他プロセスが立てたソケットを
+消してしまう競合が生まれる。
+
+呼び出し元は `ensure_*_daemon` と SessionStart の `ensure-ble` だけなので、python 1 プロセス
+(実測 23〜27ms)が増えるのはホットパスの外。送信経路は `sock_write` が直接 `nc -U` するだけで
+変わらないため、1 イベント 0.40 秒の予算には影響しない。
+
+### Windows 対応(2026-09-07)
+
+Windows でも BLE 経路を動かせるようにした。bleak の WinRT バックエンドは Windows でそのまま動くので、
+詰まったのは BLE 本体ではなく周辺の 3 点だった。
+
+- **Unix ソケットが無い**: Windows の CPython には `socket.AF_UNIX` も `asyncio.start_unix_server` も
+  無いため、デーモンは起動直後に `AttributeError` で落ちる(依存の `uv sync` は通るので「インストール失敗」に見える)。
+  `--port` を足し、Unix ソケットが使えない環境では自動で `127.0.0.1:47820` の loopback TCP に落とすようにした。
+  シェル側(`led.sh` / `atom-antigravity.sh` / `led-test.sh` / `led-demo.sh`)は bash の `/dev/tcp` で書く。
+  `nc -U` も python も要らない。`exec 3<>` ではなく subshell + リダイレクトにしてあるのは、接続失敗時に
+  `exec` が非対話シェルごと終了させてしまうため
+- **CRLF**: `core.autocrlf=true` の Windows で clone すると `.sh` が CRLF になり、shebang 末尾の `\r` で
+  `bad interpreter` になる。`.gitattributes` で `*.sh` / `*.py` を `eol=lf` に固定した
+- **GATT のキャッシュ**: Windows は探索結果をキャッシュするので、write に一度失敗して張り直すと
+  「特性が見つからない」に化ける。Windows のときだけ `winrt={"use_cached_services": False}` を渡す
+
+USB シリアル経路でも Windows 固有の罠が 4 つあった(いずれも実機 COM3 で確認):
+
+- **`stat` の BSD/GNU 差異**: `stat -f %m ... || stat -c %Y ...` の順序が逆だった。GNU では `-f` が
+  「ファイルシステム情報」の意味で**成功してしまう**ため `||` に落ちず、mtime の代わりにブロック数が
+  返って `age=$(( ... ))` が構文エラーになる。GNU(`-c`)を先に試す順序へ直した。macOS の BSD stat は
+  `-c` を知らないので確実にフォールバックする
+- **`stty` が非 0**: MSYS の COM ポートでは `raw` / `-echo` / 速度をまとめて設定できず
+  `unable to perform all requested operations` で exit 1 になる(`-hupcl` 単体・`clocal` 単体は成功)。
+  `set -eu` の led-test.sh / led-demo.sh はここで黙って落ちていた。`|| true` で許容する。
+  適用できる分は適用されるので、DTR/RTS は固定されたまま(open/close を繰り返しても uptime は単調増加)
+- **COM ポートは排他オープン**: macOS の `cu.*` と違い、2 本目以降の open が `Permission denied` になる。
+  hook が並行発火すると取りこぼすため、`send_serial` に 0.1 秒間隔 × 10 回のリトライを入れた
+  (6 並行で全て着弾することを確認)。リダイレクトは左から処理されるので、シェル自身のエラーを消すには
+  `2>/dev/null` を `3<>` **より前**に書く必要がある。led-demo.sh が fd 9 でポートを掴み続ける仕掛けは
+  同じ理由で Windows では自分の `atom_send` を弾くので、MSYS では掴まない
+- **プロセス起動が重い**: Git Bash は 1 プロセス約 70ms かかり、hook 1 回で十数個起動していたため
+  1.18 秒/イベントになっていた。`now_ms` の perl を `EPOCHREALTIME` に、`jget` の sed+head+コマンド置換を
+  bash の `[[ =~ ]]` + `printf -v` に、`cat` を `read -d ''` に置き換えて **0.40 秒/イベント**まで short-cut。
+  いずれも bash 3.2 で動く構文なので macOS 側の挙動は変わらない
+
+USB シリアル(Windows)と BLE(Mac)は同時に使える。firmware は 3 経路を同じ `handleLine` に流して
+sid ごとに集約するので、両方のセッションが 1 個の LED に並んで出る(`status` の `sessions=` で確認できる)。
+
+**シリアルポートは固定せず自動検出にした(2026-09-07)**。Windows では USB を差し直すと COM 番号
+(= `/dev/ttyS<N>`)が変わるため、`ATOM_SERIAL="auto"` で候補から探すようにした。候補は
+`/dev/ttyS*`(Windows)と `/dev/cu.usbserial-*` / `cu.wchusbserial*` / `cu.SLAB_USBtoUART*` /
+`cu.usbmodem*`(macOS)。存在しない glob は `[ -c ]` で落ちるので OS 判定は要らない。
+見つけたパスは `$TMPDIR/claude-led-serial` にキャッシュし、次回は `[ -c ]` 一発で済ませる
+(実測: 初回 0.51 秒、キャッシュヒット 0.40 秒 = 固定指定時と同じ)。候補が 1 本ならそのまま使い、
+複数あるときだけ `status` を投げて `state=` が返るものを選ぶ(1 本あたり最大 1 秒、変わった時だけ)。
+ポートが無い間は hook が 0.28 秒で静かに失敗し、stderr も汚さない。
+
+注意: 候補列挙に `set -- $cands` を使うとスクリプト本体の `$1`(サブコマンド名)を壊す。
+led.sh は関数内なので影響しないが、led-test.sh ではトップレベルなので配列を使うこと。
+
+**経路設定を `~/.claude/led.conf` に分離した(2026-09-07)**。従来は `~/.claude/led.sh` の冒頭を直接
+書き換える手順だったが、リポジトリ側の更新を `cp led.sh ~/.claude/led.sh` で反映すると設定が消え、
+`ATOM_SERIAL` が空のまま HTTP 経路(既定の `192.168.1.50`)に落ちる。curl が 1 秒でタイムアウトして
+`led.sh` の終了コードが 28 になるだけで、stderr には何も出ないので気づきにくい(実際にこれで
+「hook は発火しているのに LED が変わらない」を踏んだ)。`led.sh` は既定値の直後に led.conf を
+`.` で読むので、再コピーしても設定は残る。
+
+hook 側の切り分けでは、Windows でも `bash ~/.claude/led.sh <state>` / `async: true` / `matcher: "*"`
+すべて正常に発火することを確認した(5 通りの起動形をログ付きラッパーで比較)。`$HOME` ではなく `~` に
+してあるのは、hook が PowerShell や cmd から起動されても `~` は展開されずそのまま bash に渡り、
+bash 側が展開してくれるため。`$HOME` は PowerShell/cmd では空になる。
+
+**未解決(環境側)**: 会社の管理端末では MDM が `Bluetooth/ServicesAllowedList` を強制していることがある
+(`HKLM\SOFTWARE\Microsoft\PolicyManager\current\device\Bluetooth`)。許可リストは SIG 標準 UUID だけなので、
+NUS の `6E400001-…` は載っておらず、**スキャンとサービス探索は成功するのに GATT の read/write だけが
+`AccessDenied`(`GattCommunicationStatus=3`、`protocol_error=None`)になる**。ペアリングの有無とは無関係で、
+デバイス／サービスの `request_access_async` はどちらも Allowed(=1)を返す。この状態はスクリプト側では
+回避できない。情シスに UUID を許可リストへ追加してもらうか、USB シリアル / WiFi 経路を使う。
+
 ### プロジェクトの uv 化(2026-09-04)
 
 Python は `ble-bridge.py` の bleak 依存だけ。`pyproject.toml` + `uv.lock` を置き、スクリプト冒頭に

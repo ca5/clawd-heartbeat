@@ -29,10 +29,31 @@ ATOM_BLE_SOCK="${TMPDIR:-/tmp}/claude-led-ble.sock"
 ATOM_BLE_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd || echo "$HOME/.claude")"
 ATOM_BLE_CMD=""                       # 空なら uv があれば "uv run --script"、無ければ python3
 ATOM_BLE_PYTHON="python3"
+ATOM_BLE_PORT=""                      # 空でなければ Unix ソケットではなく 127.0.0.1:<port> を使う
+
+# Windows(Git Bash/MSYS)は AF_UNIX が無いので loopback TCP に切り替える(led.sh と同じ既定)
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*)
+    [ -n "$ATOM_BLE_PORT" ] || ATOM_BLE_PORT=47820
+    ATOM_BLE_PYTHON="python"
+    ;;
+esac
 
 now_ms() { perl -MTime::HiRes=time -e 'printf("%.0f", time()*1000)' 2>/dev/null || echo 0; }
 
 ble_write() {
+  if [ -n "$ATOM_BLE_PORT" ]; then
+    # bash の /dev/tcp で 1 行投げる。subshell なので繋がらなくても呼び手は死なない
+    ( printf '%s\n' "$1" >&3
+      IFS= read -r -t 2 _ <&3
+      : ) 2>/dev/null 3<>"/dev/tcp/127.0.0.1/$ATOM_BLE_PORT" && return 0
+    "$ATOM_BLE_PYTHON" - "$ATOM_BLE_PORT" "$1" <<'PY' >/dev/null 2>&1
+import socket, sys
+s = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=2)
+s.sendall((sys.argv[2] + "\n").encode()); s.recv(256); s.close()
+PY
+    return
+  fi
   [ -S "$ATOM_BLE_SOCK" ] || return 1
   if command -v nc >/dev/null 2>&1; then
     printf '%s\n' "$1" | nc -U -w 2 "$ATOM_BLE_SOCK" >/dev/null 2>&1
@@ -45,21 +66,42 @@ PY
   fi
 }
 
+# 実際に繋いで判定する。存在(`[ -S ]`)だけで判定すると、後片付けせずに死んだデーモンの
+# 残骸ソケットを生存と誤判定して ensure_ble_daemon が二度と起動しない(led.sh と同じ理由)
+ble_alive() {
+  if [ -n "$ATOM_BLE_PORT" ]; then
+    ( : ) 2>/dev/null 3<>"/dev/tcp/127.0.0.1/$ATOM_BLE_PORT"
+  else
+    [ -S "$ATOM_BLE_SOCK" ] || return 1
+    # nc は使わない(macOS の nc は `-U -z` で生きているソケットでも失敗する)。
+    # python が無ければ存在チェック止まり = 従来の挙動
+    command -v "$ATOM_BLE_PYTHON" >/dev/null 2>&1 || return 0
+    "$ATOM_BLE_PYTHON" - "$ATOM_BLE_SOCK" <<'PY' >/dev/null 2>&1
+import socket, sys
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.settimeout(1)
+s.connect(sys.argv[1]); s.close()
+PY
+  fi
+}
+
 ensure_ble_daemon() {
   local lock="$ATOM_BLE_SOCK.lock"
-  [ -S "$ATOM_BLE_SOCK" ] && return 0
+  ble_alive && return 0
   if [ -d "$lock" ]; then
     local age
-    age=$(( $(date +%s) - $(stat -f %m "$lock" 2>/dev/null || stat -c %Y "$lock" 2>/dev/null || echo 0) ))
+    age=$(( $(date +%s) - $(stat -c %Y "$lock" 2>/dev/null || stat -f %m "$lock" 2>/dev/null || echo 0) ))
     [ "$age" -gt 15 ] && rmdir "$lock" 2>/dev/null
   fi
   local cmd="$ATOM_BLE_CMD"
   if [ -z "$cmd" ]; then
     if command -v uv >/dev/null 2>&1; then cmd="uv run --script"; else cmd="$ATOM_BLE_PYTHON"; fi
   fi
+  local listen="--socket $ATOM_BLE_SOCK"
+  [ -n "$ATOM_BLE_PORT" ] && listen="--port $ATOM_BLE_PORT"
   if mkdir "$lock" 2>/dev/null; then
-    ( $cmd "$ATOM_BLE_DIR/ble-bridge.py" --socket "$ATOM_BLE_SOCK" \
-        </dev/null >>"${TMPDIR:-/tmp}/claude-led-ble.log" 2>&1 ; rmdir "$lock" 2>/dev/null ) &
+    # リダイレクトはサブシェル自体に掛ける(led.sh と同じ理由。hook のパイプを掴んだままにしない)
+    ( $cmd "$ATOM_BLE_DIR/ble-bridge.py" $listen ; rmdir "$lock" 2>/dev/null ) \
+        </dev/null >>"${TMPDIR:-/tmp}/claude-led-ble.log" 2>&1 &
     sleep 3
   fi
 }

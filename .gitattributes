@@ -1,0 +1,5 @@
+# Windows で clone すると core.autocrlf=true が .sh / .py を CRLF に変換してしまい、
+# bash が shebang の末尾 \r で "bad interpreter" になる(hook も ble-bridge.py も動かない)。
+# 実行されるスクリプトだけは常に LF で checkout する。
+*.sh   text eol=lf
+*.py   text eol=lf
