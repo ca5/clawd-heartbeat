@@ -264,6 +264,7 @@ The device address comes from the `ATOM` environment variable or a gitignored `.
 | `bad interpreter` on Windows | `core.autocrlf=true` gave the `.sh` files CRLF. `.gitattributes` pins them to `eol=lf`, so re-clone or run `git add --renormalize .` |
 | BLE reads/writes return Access Denied on Windows | A managed machine may enforce the MDM policy `Bluetooth/ServicesAllowedList`, which allowlists SIG UUIDs only: scanning and service discovery succeed while every GATT operation is denied. If 0x1812 is on that list, the **HOGP transport** gets you through; otherwise use serial or WiFi |
 | `hid-bridge.py --scan` shows nothing | The Atom isn't paired in the OS Bluetooth settings. HOGP requires encryption, so it has to bond (Just Works with no IO, so no PIN prompt) |
+| HOGP works for a while, then goes dead | A reboot of the Atom can leave the bond mismatched, and the link then connects and drops every couple of seconds. `uv run hid-bridge.py --repair` re-pairs it |
 | COM port disappears on Windows | Usually a broken data line in the cable — power still gets through, so the LED stays lit. If `[System.IO.Ports.SerialPort]::GetPortNames()` is empty but another USB device enumerates on the same port, replace the cable |
 
 ## Case

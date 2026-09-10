@@ -1,14 +1,27 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.9"
-# dependencies = ["hidapi>=0.14"]
+# dependencies = [
+#   "hidapi>=0.14",
+#   "winrt-runtime>=3.0; sys_platform == 'win32'",
+#   "winrt-Windows.Devices.Bluetooth>=3.0; sys_platform == 'win32'",
+#   "winrt-Windows.Devices.Bluetooth.GenericAttributeProfile>=3.0; sys_platform == 'win32'",
+#   "winrt-Windows.Devices.Enumeration>=3.0; sys_platform == 'win32'",
+#   "winrt-Windows.Foundation>=3.0; sys_platform == 'win32'",
+#   "winrt-Windows.Foundation.Collections>=3.0; sys_platform == 'win32'",
+# ]
 # ///
 """Clawd Heartbeat — HOGP(BLE HID)ブリッジ
 
 `ble-bridge.py` の兄弟。ソケットのプロトコルは同一なので led.sh からは同じに見える。
-違いは BLE リンクを **自分で張らない**こと: HOGP(HID over GATT)でペアリングした Atom は
-OS の HID ドライバがリンクを保持するので、このプロセスは「ソケット → Output Report」を
-中継するだけの薄いパイプになる。再接続・keepalive・スリープ復帰は OS 任せ。
+違いは BLE の**接続とデータ転送を OS の HID スタックに任せる**こと: 再接続・ペアリング・
+GATT の詳細はドライバ側が持ち、このプロセスは「ソケット → Output Report」を中継する。
+
+ただし **Windows はリンクを勝手には保持してくれない**(実測)。入力トラフィックの無い
+ベンダー定義 HID はアイドルで切られ、ボンドは残るのにリンクだけ落ちる(デバイスは広告を
+出し続けているのに `connection_status=0`、HID コレクションも消える)。そのため Windows では
+`maintain_connection` の GattSession を掴んでリンクを上げたままにする。掴んでいる間だけ
+接続が維持され、離すと即座に切れる。
 
 なぜ HID なのか: 会社の管理端末では MDM ポリシー `Bluetooth/ServicesAllowedList` が
 SIG 標準 UUID しか許可しておらず、NUS のカスタム UUID では GATT の read/write が
@@ -37,6 +50,55 @@ try:
 except ImportError:
     sys.stderr.write("hidapi がありません。`uv run hid-bridge.py` で起動するか `pip install hidapi` してください\n")
     sys.exit(2)
+
+# Windows のリンク保持にだけ使う。無ければ保持をあきらめて動く(POSIX ではそもそも不要)
+try:
+    from winrt.windows.devices.bluetooth import BluetoothLEDevice
+    from winrt.windows.devices.bluetooth.genericattributeprofile import GattSession
+    from winrt.windows.devices.enumeration import (
+        DeviceInformation, DevicePairingKinds, DevicePairingProtectionLevel,
+    )
+    HAVE_WINRT = True
+except ImportError:
+    HAVE_WINRT = False
+
+
+async def find_paired_info(name, paired=True):
+    """ペアリング状態で絞って BLE デバイスを名前で探す(Windows)。"""
+    sel = BluetoothLEDevice.get_device_selector_from_pairing_state(paired)
+    infos = await DeviceInformation.find_all_async_aqs_filter(sel)
+    return next((di for di in infos
+                 if not name or name.lower() in (di.name or "").lower()), None)
+
+
+async def repair(name):
+    """ボンドを捨てて張り直す。
+
+    Atom が再起動すると Windows 側のボンドと食い違うことがあり、そうなると
+    「2 秒ごとに接続しては切れる」を繰り返す(暗号化に失敗して切られるため)。
+    リンクは CONNECTED と DISCONNECTED を往復し、HID コレクションも出たり消えたりする。
+    ペアリングし直せば直る。IO が無いので Just Works(確認のみ)で完了する。
+    """
+    if not HAVE_WINRT:
+        log("--repair は Windows 専用です")
+        return
+    di = await find_paired_info(name, True)
+    if di is not None:
+        r = await di.pairing.unpair_async()
+        log(f"unpaired (status={r.status})")
+        await asyncio.sleep(3)
+    di = await find_paired_info(name, False)
+    if di is None:
+        log("デバイスが見つかりません。電源が入って広告しているか確認してください")
+        return
+    custom = di.pairing.custom
+    token = custom.add_pairing_requested(lambda s, a: a.accept())
+    try:
+        res = await custom.pair_with_protection_level_async(
+            DevicePairingKinds.CONFIRM_ONLY, DevicePairingProtectionLevel.ENCRYPTION)
+        log(f"pair status={res.status} protection={res.protection_level_used}")
+    finally:
+        custom.remove_pairing_requested(token)
 
 # firmware(src/main.cpp)と一致させること
 HID_REPORT_ID = 1
@@ -83,6 +145,40 @@ class Bridge:
         self.path = None
         self.lock = asyncio.Lock()       # HID 操作を直列化(同時 write の衝突回避)
         self.last_error = ""
+        self.session = None              # GattSession。掴んでいる間だけ BLE リンクが上がる
+
+    async def ensure_link(self):
+        """ボンド済みでもリンクが落ちるので、GattSession を掴んで上げたままにする(Windows)。
+
+        HOGP は「OS がリンクを保持する」のが売りだが、入力トラフィックの無いベンダー定義 HID は
+        アイドルで切られる。セッションを閉じた途端に DISCONNECTED になることを実測で確認済み。
+        """
+        if not HAVE_WINRT:
+            return False
+        if self.session is not None and self.session.session_status == 1:   # 1 = Active
+            return True
+        self.session = None
+        try:
+            sel = BluetoothLEDevice.get_device_selector_from_pairing_state(True)
+            infos = await DeviceInformation.find_all_async_aqs_filter(sel)
+            target = next((di for di in infos
+                           if not self.name or self.name.lower() in (di.name or "").lower()), None)
+            if target is None:
+                self.last_error = "paired BLE device not found (OS 設定でペアリングしてください)"
+                return False
+            dev = await BluetoothLEDevice.from_id_async(target.id)
+            if dev is None:
+                self.last_error = "BluetoothLEDevice unavailable"
+                return False
+            s = await GattSession.from_device_id_async(dev.bluetooth_device_id)
+            s.maintain_connection = True
+            self.session = s
+            log(f"holding a GATT session for {target.name} (keeps the link up)")
+            return True
+        except Exception as e:
+            self.last_error = str(e)
+            log(f"link keeper failed: {e}")
+            return False
 
     def _open(self):
         # 開いたままにしておく。デバイスが消えれば write が例外になるので、そこで開き直す
@@ -129,14 +225,29 @@ class Bridge:
     async def send_line(self, line: str) -> str:
         async with self.lock:
             if not self._open():
-                return f"error: {self.last_error or 'not connected'}\n"
+                # リンクが落ちていると HID コレクション自体が見えなくなる。張り直して待つ
+                await self.ensure_link()
+                for _ in range(8):
+                    await asyncio.sleep(1.0)
+                    if self._open():
+                        break
+                else:
+                    return f"error: {self.last_error or 'not connected'}\n"
             payload = line.encode()[:HID_OUT_LEN - 1]
             report = bytes([HID_REPORT_ID]) + payload + b"\0" * (HID_OUT_LEN - len(payload))
             try:
                 self.dev.write(report)
                 if line.strip() == "status":
                     time.sleep(0.25)     # firmware が loop() で処理して setValue するのを待つ
-                    body = self._read_response()
+                    # 再接続直後は read が一度こけることがある(デバイスノードが落ち着く前)
+                    for attempt in range(3):
+                        try:
+                            body = self._read_response()
+                            break
+                        except Exception:
+                            if attempt == 2:
+                                raise
+                            time.sleep(0.6)
                     return (body if body.endswith("\n") else body + "\n") if body else "error: no response\n"
                 return "ok\n"
             except Exception as e:
@@ -174,7 +285,13 @@ async def main():
     ap.add_argument("--port", type=int, default=None,
                     help=f"Unix ソケットではなく 127.0.0.1:<port> で待ち受ける(Windows 既定: {DEFAULT_PORT})")
     ap.add_argument("--scan", action="store_true", help="ベンダー定義 HID コレクションを列挙して終了(診断用)")
+    ap.add_argument("--repair", action="store_true",
+                    help="ボンドを捨てて張り直す(2 秒ごとに接続と切断を繰り返すときの復旧)")
     args = ap.parse_args()
+
+    if args.repair:
+        await repair(args.name or None)
+        return
 
     if args.scan:
         # 名前で絞らずに全部出す。どれが Atom か分からないときのため
@@ -193,6 +310,8 @@ async def main():
         port = DEFAULT_PORT      # Windows: Unix ソケットが無いので loopback TCP
 
     bridge = Bridge(args.name or None, args.vid, args.pid)
+    # 最初の hook イベントが来る前にリンクを上げておく(起動直後の取りこぼしを防ぐ)
+    await bridge.ensure_link()
     handler = lambda r, w: handle_client(r, w, bridge)
     if port is not None:
         server = await asyncio.start_server(handler, host="127.0.0.1", port=port)

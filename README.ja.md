@@ -291,6 +291,7 @@ WiFi 接続中の表示です。点きっぱなしの場合は 2.4GHz の SSID �
 | Windows で `bad interpreter` | `core.autocrlf=true` で `.sh` が CRLF になっている。`.gitattributes` で `eol=lf` に固定してあるので、clone し直すか `git add --renormalize .` |
 | Windows で BLE の read/write が Access Denied | 管理端末の MDM ポリシー `Bluetooth/ServicesAllowedList` が SIG 標準 UUID のみ許可している。スキャンとサービス探索は成功するのに GATT だけ拒否される。許可リストに 0x1812 があれば **HOGP 経路**で回避できる。無ければ USB シリアルか WiFi |
 | `hid-bridge.py --scan` に出てこない | OS の設定で Atom をペアリングしていない。HOGP は暗号化必須なのでボンディングが要る(IO 無しの Just Works なので PIN は出ない) |
+| HOGP がしばらく動いてから反応しなくなる | Atom の再起動でボンドが食い違うと、2 秒ごとに接続と切断を繰り返す。`uv run hid-bridge.py --repair` でペアリングし直す |
 | Windows で COM ポートが消える | ケーブルのデータ線の断線が多い(電源線は生きているので LED は点いたまま)。`[System.IO.Ports.SerialPort]::GetPortNames()` が空で、別の USB 機器は同じポートで認識される場合はケーブルを交換する |
 
 ## ケース
