@@ -107,6 +107,7 @@ HID_IN_LEN = 512             # Atom → host(status の本文を丸ごと)
 VENDOR_USAGE_PAGE = 0xFF00   # report map の Usage Page (Vendor Defined)
 DEFAULT_NAME = "clawd-heartbeat"
 DEFAULT_PORT = 47821         # ble-bridge.py の 47820 とぶつけない
+REPAIR_COOLDOWN = 300        # 自動再ペアリングの間隔(秒)。壊れていないのに繰り返さない
 
 
 def default_socket():
@@ -146,6 +147,15 @@ class Bridge:
         self.lock = asyncio.Lock()       # HID 操作を直列化(同時 write の衝突回避)
         self.last_error = ""
         self.session = None              # GattSession。掴んでいる間だけ BLE リンクが上がる
+        self.last_repair = 0.0           # 自動再ペアリングの実行時刻(連発を防ぐ)
+
+    async def _wait_for_device(self, seconds):
+        """HID コレクションが出てくるのを待つ。出たら開いた状態で True。"""
+        for _ in range(seconds):
+            await asyncio.sleep(1.0)
+            if self._open():
+                return True
+        return False
 
     async def ensure_link(self):
         """ボンド済みでもリンクが落ちるので、GattSession を掴んで上げたままにする(Windows)。
@@ -227,11 +237,18 @@ class Bridge:
             if not self._open():
                 # リンクが落ちていると HID コレクション自体が見えなくなる。張り直して待つ
                 await self.ensure_link()
-                for _ in range(8):
-                    await asyncio.sleep(1.0)
-                    if self._open():
-                        break
-                else:
+                if not await self._wait_for_device(8):
+                    # セッションを掴んでもデバイスが出てこない = リンクは張れるが維持できない。
+                    # ボンド不一致(2 秒ごとに接続と切断を繰り返す)の疑いなので張り直す。
+                    # 誤検知で何度もペアリングし直さないよう間隔を空ける
+                    if HAVE_WINRT and time.time() - self.last_repair > REPAIR_COOLDOWN:
+                        self.last_repair = time.time()
+                        log("link will not hold; re-pairing (bond mismatch?)")
+                        await repair(self.name)
+                        self.session = None
+                        await self.ensure_link()
+                        await self._wait_for_device(10)
+                if not self._open():
                     return f"error: {self.last_error or 'not connected'}\n"
             payload = line.encode()[:HID_OUT_LEN - 1]
             report = bytes([HID_REPORT_ID]) + payload + b"\0" * (HID_OUT_LEN - len(payload))

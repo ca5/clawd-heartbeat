@@ -46,7 +46,7 @@ ble_write() {
     # bash の /dev/tcp で 1 行投げる。subshell なので繋がらなくても呼び手は死なない
     ( printf '%s\n' "$1" >&3
       IFS= read -r -t 2 _ <&3
-      : ) 3<>"/dev/tcp/127.0.0.1/$ATOM_BLE_PORT" 2>/dev/null && return 0
+      : ) 2>/dev/null 3<>"/dev/tcp/127.0.0.1/$ATOM_BLE_PORT" && return 0
     "$ATOM_BLE_PYTHON" - "$ATOM_BLE_PORT" "$1" <<'PY' >/dev/null 2>&1
 import socket, sys
 s = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=2)
@@ -68,7 +68,7 @@ PY
 
 ble_alive() {
   if [ -n "$ATOM_BLE_PORT" ]; then
-    ( : ) 3<>"/dev/tcp/127.0.0.1/$ATOM_BLE_PORT" 2>/dev/null
+    ( : ) 2>/dev/null 3<>"/dev/tcp/127.0.0.1/$ATOM_BLE_PORT"
   else
     [ -S "$ATOM_BLE_SOCK" ]
   fi
@@ -89,8 +89,9 @@ ensure_ble_daemon() {
   local listen="--socket $ATOM_BLE_SOCK"
   [ -n "$ATOM_BLE_PORT" ] && listen="--port $ATOM_BLE_PORT"
   if mkdir "$lock" 2>/dev/null; then
-    ( $cmd "$ATOM_BLE_DIR/ble-bridge.py" $listen \
-        </dev/null >>"${TMPDIR:-/tmp}/claude-led-ble.log" 2>&1 ; rmdir "$lock" 2>/dev/null ) &
+    # リダイレクトはサブシェル自体に掛ける(led.sh と同じ理由。hook のパイプを掴んだままにしない)
+    ( $cmd "$ATOM_BLE_DIR/ble-bridge.py" $listen ; rmdir "$lock" 2>/dev/null ) \
+        </dev/null >>"${TMPDIR:-/tmp}/claude-led-ble.log" 2>&1 &
     sleep 3
   fi
 }

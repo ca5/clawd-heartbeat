@@ -93,7 +93,7 @@ sock_write() {
       # 応答が無い(タイムアウト)場合は投げっぱなしとして成功扱いのまま
       IFS= read -r -t 2 reply <&3
       case "$reply" in error:*) exit 1 ;; esac
-      : ) 3<>"/dev/tcp/127.0.0.1/$2" 2>/dev/null && return 0
+      : ) 2>/dev/null 3<>"/dev/tcp/127.0.0.1/$2" && return 0
     "$ATOM_BLE_PYTHON" - "$2" "$3" <<'PY' >/dev/null 2>&1
 import socket, sys
 s = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=2)
@@ -116,7 +116,7 @@ PY
 # デーモンが待ち受けているか。TCP は繋いでみる、Unix ソケットは存在で判定する
 sock_alive() {
   if [ -n "$2" ]; then
-    ( : ) 3<>"/dev/tcp/127.0.0.1/$2" 2>/dev/null
+    ( : ) 2>/dev/null 3<>"/dev/tcp/127.0.0.1/$2"
   else
     [ -S "$1" ]
   fi
@@ -146,8 +146,10 @@ ensure_ble_daemon() {
   local listen="--socket $ATOM_BLE_SOCK"
   [ -n "$ATOM_BLE_PORT" ] && listen="--port $ATOM_BLE_PORT"
   if mkdir "$lock" 2>/dev/null; then
-    ( $cmd "$ATOM_BLE_DIR/ble-bridge.py" $listen \
-        </dev/null >>"${TMPDIR:-/tmp}/claude-led-ble.log" 2>&1 ; rmdir "$lock" 2>/dev/null ) &
+    # リダイレクトはサブシェル自体に掛ける。コマンドだけに掛けるとサブシェルが hook の
+    # stdout/stderr パイプを掴んだままになり、hook の出力を読む側が EOF を待って固まる
+    ( $cmd "$ATOM_BLE_DIR/ble-bridge.py" $listen ; rmdir "$lock" 2>/dev/null ) \
+        </dev/null >>"${TMPDIR:-/tmp}/claude-led-ble.log" 2>&1 &
     sleep 3   # スキャン + 接続の確立を待つ(初回だけ)
   fi
 }
@@ -235,8 +237,8 @@ ensure_hid_daemon() {
   local listen="--socket $ATOM_HID_SOCK"
   [ -n "$ATOM_HID_PORT" ] && listen="--port $ATOM_HID_PORT"
   if mkdir "$lock" 2>/dev/null; then
-    ( $cmd "$ATOM_HID_DIR/hid-bridge.py" $listen \
-        </dev/null >>"${TMPDIR:-/tmp}/claude-led-hid.log" 2>&1 ; rmdir "$lock" 2>/dev/null ) &
+    ( $cmd "$ATOM_HID_DIR/hid-bridge.py" $listen ; rmdir "$lock" 2>/dev/null ) \
+        </dev/null >>"${TMPDIR:-/tmp}/claude-led-hid.log" 2>&1 &
     sleep 1   # HID デバイスを開くだけなので BLE のスキャン待ちより短い
   fi
 }

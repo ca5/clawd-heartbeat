@@ -76,7 +76,7 @@ atom_send() {
         # Windows には Unix ソケットが無いので bash の /dev/tcp で loopback に繋ぐ
         ( printf '%s\n' "$cmd" >&3
           while IFS= read -r -t 3 line <&3; do printf '%s\n' "${line%$'\r'}"; done
-        ) 3<>"/dev/tcp/127.0.0.1/$port" 2>/dev/null \
+        ) 2>/dev/null 3<>"/dev/tcp/127.0.0.1/$port" \
           || { echo "$kind ブリッジが起動していません(127.0.0.1:$port)。led.sh 経由か ${kind}-bridge.py を起動してください" >&2; return 1; }
       elif [ ! -S "$sock" ]; then
         echo "$kind ブリッジが起動していません($sock)。led.sh 経由か ${kind}-bridge.py を起動してください" >&2; return 1
